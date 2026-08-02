@@ -1,0 +1,48 @@
+# --- секреты и локальные настройки ---
+НАСТРОЙКИ.ini
+SETTINGS.ini
+.env
+*.session
+*.session-journal
+tg_session*
+*.session.bak
+
+# --- результаты работы ---
+output/*
+!output/.gitkeep
+!output/backtest/
+!output/mt5/
+output/backtest/*
+!output/backtest/.gitkeep
+output/mt5/*
+!output/mt5/.gitkeep
+!output/mt5/by_symbol/
+output/mt5/by_symbol/*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- логи / временное ---
+panel_log.txt
+*.log
+_job_*.json
+_job_*.txt
+_bt.txt
+_fail_samples.json
+_run_*.txt
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

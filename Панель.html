@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SignalKit — панель</title>
+<style>
+:root{
+  --card:#fff; --ink:#1a1f1c; --muted:#5c6560;
+  --line:#d8d3c8; --go:#1f6f4a; --go2:#165538; --warn:#8a5a00; --bad:#8b2e2e;
+  --accent:#c4a35a;
+  font-family:"Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(165deg,#ebe6db 0%,#f7f5f0 45%,#e7eee8 100%);color:var(--ink);min-height:100vh}
+.wrap{max-width:920px;margin:0 auto;padding:28px 18px 60px}
+header h1{font-size:1.65rem;margin:0 0 6px;letter-spacing:-.02em}
+header p{margin:0;color:var(--muted);line-height:1.45}
+.grid{display:grid;gap:16px}
+@media(min-width:800px){.grid-2{grid-template-columns:1.2fr .8fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 8px 24px rgba(26,31,28,.04)}
+.card h2{margin:0 0 12px;font-size:1.05rem}
+label{display:block;font-size:.78rem;color:var(--muted);margin:10px 0 4px}
+input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fcfbf8}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:999px;padding:12px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn-go{background:var(--go);color:#fff}.btn-go:hover{background:var(--go2)}
+.btn-sec{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.btn-warn{background:#fff7e6;border:1px solid #e6c98a;color:var(--warn)}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.hint{font-size:.85rem;color:var(--muted);line-height:1.45;margin-top:8px}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps li{position:relative;padding:12px 12px 12px 48px;border:1px solid var(--line);border-radius:12px;margin-bottom:10px;background:#fcfbf8}
+.steps li:before{counter-increment:s;content:counter(s);position:absolute;left:12px;top:12px;width:26px;height:26px;border-radius:50%;background:var(--accent);color:#1a1f1c;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem}
+pre{background:#1a1f1c;color:#e8efe9;padding:14px;border-radius:12px;overflow:auto;max-height:320px;font-size:.78rem;line-height:1.4;white-space:pre-wrap}
+.ok{color:#1f6f4a}.bad{color:var(--bad)}
+.banner{background:#1a1f1c;color:#f3f1ec;border-radius:14px;padding:16px 18px;margin-bottom:16px}
+.banner strong{color:var(--accent)}
+#status{border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:.92rem}
+#status.on{background:#e7f3ec;border:1px solid #b7dcc8;color:#165538}
+#status.off{background:#fdeeee;border:1px solid #e8b4b4;color:#8b2e2e}
+table.res{width:100%;border-collapse:collapse;font-size:.82rem;background:#fff}
+table.res th,table.res td{border:1px solid var(--line);padding:6px 8px;text-align:left;white-space:nowrap}
+table.res th{background:#f3efe6;position:sticky;top:0}
+table.res tr:nth-child(even){background:#faf8f3}
+.metric{display:inline-block;margin:4px 10px 4px 0;padding:6px 10px;border-radius:8px;background:#fcfbf8;border:1px solid var(--line);color:#1a1f1c}
+.metric b{color:#1a1f1c}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>SignalKit</h1>
+    <p>Два робота: анализ истории канала и live-торговля в MT5.<br/>
+    Все данные — в файле <strong>НАСТРОЙКИ.ini</strong>.</p>
+  </header>
+
+  <div id="status" class="off">Проверка связи с движком…</div>
+
+  <div class="banner">
+    <strong>Как открывать панель:</strong> всегда через файл
+    <strong>START.bat</strong> (он включает движок и открывает эту страницу).<br/>
+    Если просто открыть HTML без bat — кнопки работать не будут.
+  </div>
+
+  <section class="card" id="tgLoginCard" style="margin-bottom:16px">
+    <h2>Вход в Telegram (для скачивания истории)</h2>
+    <p class="hint" id="tgStatusMsg" style="margin-top:0">Проверка…</p>
+    <div id="tgLoginBox">
+      <div class="actions" style="margin-top:0">
+        <button type="button" class="btn btn-go" onclick="tgImportSession()">Подключить готовую сессию</button>
+      </div>
+      <p class="hint">Рекомендуется: если вы уже входили в Telegram в этом проекте — код не нужен.</p>
+      <label>Телефон (+...) — только если сессии нет</label>
+      <input id="tg_phone" placeholder="+79001234567"/>
+      <div class="actions">
+        <button type="button" class="btn btn-sec" onclick="tgSendCode(false)">Запросить код в чат Telegram</button>
+      </div>
+      <p class="hint"><b>SMS через API больше не работает</b> (ограничение Telegram). Код, если придёт,
+        будет в приложении Telegram в чате <b>«Telegram»</b>.</p>
+      <label>Код из чата Telegram</label>
+      <input id="tg_code" placeholder="12345" autocomplete="one-time-code"/>
+      <div class="actions">
+        <button type="button" class="btn btn-go" onclick="tgSubmitCode()">Подтвердить код</button>
+      </div>
+      <div id="tgPwBox" style="display:none">
+        <label>Облачный пароль (если включена 2FA)</label>
+        <input id="tg_password" type="password" placeholder="пароль Telegram"/>
+        <div class="actions">
+          <button type="button" class="btn btn-warn" onclick="tgSubmitPassword()">Подтвердить пароль</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid grid-2">
+    <section class="card">
+      <h2>Настройки</h2>
+      <form id="cfg" onsubmit="return saveCfg(event)">
+        <label>Telegram-канал (без https://t.me/)</label>
+        <input name="channel" id="channel" placeholder="your_channel_name" required/>
+
+        <div class="row">
+          <div>
+            <label>Период, дней (робот №1)</label>
+            <input name="days_back" id="days_back" type="number" min="1" value="365"/>
+          </div>
+          <div>
+            <label>Как качать историю</label>
+            <select name="fetch_mode" id="fetch_mode">
+              <option value="telethon">telethon — полная (нужен API)</option>
+              <option value="web">web — коротко, без логина</option>
+            </select>
+          </div>
+        </div>
+
+        <label style="display:none">Готовый шаблон разбора сообщений</label>
+        <div class="actions" style="margin-top:0;display:none">
+          <button type="button" class="btn btn-sec" onclick="applyPreset('tradingplus')">TradingPlus</button>
+          <button type="button" class="btn btn-sec" onclick="applyPreset('amarkets')">AMarkets</button>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>api_id (my.telegram.org)</label>
+            <input name="api_id" id="api_id" placeholder="только для telethon"/>
+          </div>
+          <div>
+            <label>api_hash</label>
+            <input name="api_hash" id="api_hash" placeholder="только для telethon"/>
+          </div>
+        </div>
+        <label>Телефон Telegram (+…)</label>
+        <input name="phone" id="phone" placeholder="+79001234567"/>
+
+        <label style="display:none">Формат сигнала</label>
+        <select name="format" id="format" style="display:none">
+          <option value="labels">labels — подписи в тексте</option>
+          <option value="compact">compact — #EURUSD Buy … SL … TP</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label>Обязательные слова (через |)</label>
+            <input name="must_contain" id="must_contain"/>
+          </div>
+          <div>
+            <label>Пропускать, если есть (через |)</label>
+            <input name="skip_if_contains" id="skip_if_contains"/>
+          </div>
+        </div>
+
+        <div class="row">
+          <div><label>Подпись стороны</label><input name="label_side" id="label_side"/></div>
+          <div><label>Подпись входа</label><input name="label_entry" id="label_entry"/></div>
+        </div>
+        <div class="row">
+          <div><label>Подпись стопа</label><input name="label_sl" id="label_sl"/></div>
+          <div><label>Подпись тейка</label><input name="label_tp" id="label_tp"/></div>
+        </div>
+        <div class="row">
+          <div><label>Слова BUY (через |)</label><input name="buy_words" id="buy_words"/></div>
+          <div><label>Слова SELL (через |)</label><input name="sell_words" id="sell_words"/></div>
+        </div>
+        <div class="row">
+          <div><label>Слова «открытый TP»</label><input name="tp_open_words" id="tp_open_words"/></div>
+          <div><label>RR если TP открытый</label><input name="open_tp_rr" id="open_tp_rr" type="number" step="0.1"/></div>
+        </div>
+
+        <h3 style="margin:18px 0 8px;font-size:1rem">Сопровождение сделок</h3>
+        <p class="hint" style="margin-top:0">Цепочки постов: новый сигнал → корректировка цены/стопа → отмена лимита → разворот. Влияет на историю и Live.</p>
+        <div class="row">
+          <div>
+            <label>Сопровождение</label>
+            <select name="manage_enabled" id="manage_enabled" onchange="toggleManageFields()">
+              <option value="no">выкл</option>
+              <option value="yes">вкл</option>
+            </select>
+          </div>
+          <div>
+            <label>Связывать посты, часов</label>
+            <input name="manage_link_max_hours" id="manage_link_max_hours" type="number" min="1" value="96"/>
+          </div>
+        </div>
+        <div id="manageFields">
+          <div class="row">
+            <div><label>Слова: отмена лимита</label><input name="manage_words_cancel_pending" id="manage_words_cancel_pending"/></div>
+            <div><label>Слова: разворот</label><input name="manage_words_reverse" id="manage_words_reverse"/></div>
+          </div>
+          <div class="row">
+            <div><label>Слова: смена стопа</label><input name="manage_words_modify_sl" id="manage_words_modify_sl"/></div>
+            <div><label>Слова: по рынку</label><input name="manage_words_to_market" id="manage_words_to_market"/></div>
+          </div>
+          <div class="row">
+            <div><label>Слова: закрытие</label><input name="manage_words_close" id="manage_words_close"/></div>
+            <div><label>Слова: безубыток</label><input name="manage_words_breakeven" id="manage_words_breakeven"/></div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-go" type="submit">Сохранить настройки</button>
+          <a class="btn btn-sec" href="/open-settings" target="_blank">Открыть НАСТРОЙКИ.ini</a>
+        </div>
+        <p class="hint" id="saveMsg"></p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Два робота</h2>
+      <ol class="steps">
+        <li>
+          <strong>Анализ истории</strong><br/>
+          Сначала войдите в Telegram блоком выше (если ещё не вошли), затем:
+          <div class="actions">
+            <button class="btn btn-go" type="button" id="btnParse">1. Скачать сигналы</button>
+            <button class="btn btn-warn" type="button" id="btnBacktest">2. Анализ сделок</button>
+          </div>
+          <p class="hint">Перед шагом 2 откройте MetaTrader 5 и войдите в счёт.</p>
+        </li>
+        <li>
+          <strong>Live в реальном времени</strong><br/>
+          Готовит правила и копирует советник в MT5.
+          <div class="actions">
+            <button class="btn btn-go" type="button" id="btnLive">3. Подготовить Live</button>
+          </div>
+          <p class="hint">Дальше в MT5: TG_Signal_Live_EA v1.20, WebRequest https://t.me, DryRun=true. Цепочки: inherit SL, replace market, BE, reverse, modify levels — те же правила, что в анализе.</p>
+        </li>
+      </ol>
+      <h2 style="margin-top:18px">Журнал <span id="jobBadge" class="hint" style="margin-left:8px"></span></h2>
+      <pre id="log" style="min-height:220px;max-height:420px">Ожидание действий…</pre>
+      <div class="actions">
+        <a class="btn btn-sec" href="/report" target="_blank">Отчёт анализа</a>
+        <a class="btn btn-sec" href="/signals" target="_blank">Список сигналов</a>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" id="resultsCard" style="margin-top:16px">
+      <h2>Результаты — что вы получили</h2>
+      <div id="resultsHint" class="hint">
+        <b>Шаг 1 «Скачать сигналы»</b> — вытягивает посты канала и собирает таблицу сделок (символ, вход, SL, TP).<br/>
+        <b>Шаг 2 «Анализ сделок»</b> — прогоняет эти сделки по истории вашего MT5 и считает TP/SL/винрейт.<br/>
+        После нажатия кнопки сюда автоматически подтянется ответ.
+      </div>
+      <div id="resultsSummary" class="banner" style="margin-top:12px;display:none"></div>
+      <div class="actions" style="margin-top:10px">
+        <button type="button" class="btn btn-sec" id="btnShowSignals">Показать таблицу сигналов</button>
+        <button type="button" class="btn btn-sec" id="btnShowBacktest">Показать анализ</button>
+        <a class="btn btn-sec" href="/signals" target="_blank">Открыть сигналы отдельной вкладкой</a>
+        <a class="btn btn-sec" href="/report" target="_blank">Открыть анализ отдельной вкладкой</a>
+      </div>
+      <div id="resultsTableWrap" style="margin-top:12px;overflow:auto;max-height:480px"></div>
+  </section>
+</div>
+<script>
+const API = (location.protocol === 'http:' || location.protocol === 'https:')
+  ? ''
+  : 'http://127.0.0.1:8765';
+
+async function ping(){
+  const el = document.getElementById('status');
+  try{
+    const r = await fetch(API + '/api/settings', {cache:'no-store'});
+    if(!r.ok) throw new Error('bad');
+    el.className = 'on';
+    el.innerHTML = 'Движок подключен. Можно сохранять настройки и запускать роботов.';
+    return true;
+  }catch(e){
+    el.className = 'off';
+    el.innerHTML = 'Движок не запущен. Закройте эту вкладку и откройте файл <b>Открыть_панель.bat</b> — браузер откроется сам.';
+    return false;
+  }
+}
+
+async function loadCfg(){
+  if(!(await ping())) return;
+  const r = await fetch(API + '/api/settings');
+  const j = await r.json();
+  for (const [k,v] of Object.entries(j)){
+    const el = document.getElementById(k);
+    if(el) el.value = v ?? '';
+  }
+  if(j.phone) document.getElementById('tg_phone').value = j.phone;
+  toggleManageFields();
+  await refreshTgStatus();
+}
+
+function toggleManageFields(){
+  const on = (document.getElementById('manage_enabled') || {}).value === 'yes';
+  const box = document.getElementById('manageFields');
+  if(box) box.style.opacity = on ? '1' : '.45';
+  if(box) box.style.pointerEvents = on ? 'auto' : 'none';
+}
+
+async function refreshTgStatus(){
+  try{
+    const r = await fetch(API + '/api/tg/status');
+    const j = await r.json();
+    const msg = document.getElementById('tgStatusMsg');
+    const box = document.getElementById('tgLoginBox');
+    msg.textContent = j.message || '';
+    msg.className = 'hint ' + (j.authorized ? 'ok' : 'bad');
+    if(j.phone && !document.getElementById('tg_phone').value)
+      document.getElementById('tg_phone').value = j.phone;
+    box.style.display = j.authorized ? 'none' : 'block';
+    document.getElementById('tgPwBox').style.display = j.need_password ? 'block' : 'none';
+  }catch(e){}
+}
+
+async function tgImportSession(){
+  if(!(await ping())) return;
+  document.getElementById('log').textContent = 'Подключаю готовую сессию…';
+  const r = await fetch(API + '/api/tg/import_session', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  const j = await r.json();
+  const text = j.message || j.error || JSON.stringify(j);
+  document.getElementById('log').textContent = text;
+  document.getElementById('tgStatusMsg').textContent = text;
+  document.getElementById('tgStatusMsg').className = 'hint ' + (j.ok ? 'ok' : 'bad');
+  await refreshTgStatus();
+}
+
+async function tgSendCode(forceSms){
+  if(!(await ping())) return;
+  const phone = document.getElementById('tg_phone').value.trim();
+  document.getElementById('phone').value = phone;
+  await fetch(API + '/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({phone})
+  });
+  document.getElementById('log').textContent = 'Запрашиваю код…';
+  const r = await fetch(API + '/api/tg/send_code', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({phone, force_sms: !!forceSms})
+  });
+  const j = await r.json();
+  const text = j.message || j.error || JSON.stringify(j);
+  document.getElementById('log').textContent = text;
+  document.getElementById('tgStatusMsg').textContent = text;
+  document.getElementById('tgStatusMsg').className = 'hint ' + (j.ok ? 'ok' : 'bad');
+  if(j.ok && !j.already) document.getElementById('tg_code').focus();
+  await refreshTgStatus();
+}
+
+async function tgSubmitCode(){
+  if(!(await ping())) return;
+  const code = document.getElementById('tg_code').value.trim();
+  document.getElementById('log').textContent = 'Проверяю код…';
+  const r = await fetch(API + '/api/tg/submit_code', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code})
+  });
+  const j = await r.json();
+  document.getElementById('log').textContent = j.message || j.error || JSON.stringify(j);
+  if(j.need_password){
+    document.getElementById('tgPwBox').style.display = 'block';
+    document.getElementById('tg_password').focus();
+  }
+  await refreshTgStatus();
+}
+
+async function tgSubmitPassword(){
+  if(!(await ping())) return;
+  const password = document.getElementById('tg_password').value;
+  const r = await fetch(API + '/api/tg/submit_password', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password})
+  });
+  const j = await r.json();
+  document.getElementById('log').textContent = j.message || j.error || JSON.stringify(j);
+  await refreshTgStatus();
+}
+
+async function saveCfg(e){
+  e.preventDefault();
+  if(!(await ping())) return false;
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  const r = await fetch(API + '/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  const msg = document.getElementById('saveMsg');
+  msg.textContent = j.ok ? 'Сохранено в НАСТРОЙКИ.ini' : ('Ошибка: ' + (j.error||''));
+  msg.className = 'hint ' + (j.ok ? 'ok' : 'bad');
+  if(body.phone) document.getElementById('tg_phone').value = body.phone;
+  await refreshTgStatus();
+  return false;
+}
+
+async function applyPreset(name){
+  if(!(await ping())) return;
+  const r = await fetch(API + '/api/preset/' + name, {method:'POST'});
+  const j = await r.json();
+  if(j.ok){
+    await loadCfg();
+    document.getElementById('saveMsg').textContent = 'Пресет «' + name + '» применён';
+    document.getElementById('saveMsg').className = 'hint ok';
+  } else alert(j.error || 'ошибка');
+}
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function showSignals(){
+  const sum = document.getElementById('resultsSummary');
+  const wrap = document.getElementById('resultsTableWrap');
+  sum.style.display = 'block';
+  sum.innerHTML = 'Загружаю таблицу сигналов…';
+  wrap.innerHTML = '';
+  try{
+    const j = await (await fetch(API + '/api/results/signals?t=' + Date.now())).json();
+    if(!j.ok){
+      sum.innerHTML = '<strong>Сигналов нет.</strong> ' + esc(j.error || '');
+      return;
+    }
+    sum.innerHTML =
+      '<strong>Результат шага 1 — список сделок из канала</strong><br/>' +
+      esc(j.message) +
+      '<div style="margin-top:10px">' +
+      '<span class="metric">Успешно: <b>' + j.count + '</b></span>' +
+      '<span class="metric">Сопровождение: <b>' + (j.manage || 0) + '</b></span>' +
+      '<span class="metric">Цепочек: <b>' + (j.chains || 0) + '</b></span>' +
+      '<span class="metric">Не разобрано: <b>' + j.fail + '</b></span>' +
+      '</div>' +
+      '<div class="hint" style="color:#ddd;margin-top:8px">' +
+      'Цепочка привязана к id первого сигнала. Корректировки меняют ту же сделку.</div>';
+
+    let html = '<table class="res"><thead><tr>' +
+      '<th>Дата UTC</th><th>Роль</th><th>Цепочка</th><th>Символ</th><th>Сторона</th><th>Действие</th><th>Ордер</th><th>Entry</th><th>SL</th><th>TP</th><th>Пост</th>' +
+      '</tr></thead><tbody>';
+    const actRu = {open:'вход', breakeven:'безубыток', modify_sl:'смена стопа', replace_market:'замена на рынок',
+      cancel_pending:'снятие лимита', reverse:'разворот', close:'закрытие', add:'добор'};
+    const roleRu = {signal:'сигнал', manage:'сопровождение'};
+    for(const r of (j.rows || [])){
+      const bg = r.action === 'breakeven' ? '#e7f3ec' : (r.role === 'manage' ? '#fff7e6' : '');
+      html += '<tr style="background:' + bg + '">' +
+        '<td>' + esc(r.date) + '</td>' +
+        '<td>' + esc(roleRu[r.role] || r.role || '') + '</td>' +
+        '<td>' + esc(r.chain_id || '') + '</td>' +
+        '<td><b>' + esc(r.symbol) + '</b></td>' +
+        '<td>' + esc(r.side) + '</td>' +
+        '<td><b>' + esc(actRu[r.action] || r.action || '') + '</b></td>' +
+        '<td>' + esc(r.order) + '</td>' +
+        '<td>' + esc(r.entry) + '</td>' +
+        '<td>' + esc(r.sl) + '</td>' +
+        '<td>' + esc(r.tp) + '</td>' +
+        '<td>' + (r.link ? ('<a href="' + esc(r.link) + '" target="_blank">открыть</a>') : '') + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    if((j.rows || []).length < j.count){
+      html += '<p class="hint">Показаны первые ' + j.rows.length + ' из ' + j.count + '. Полный список — «Открыть сигналы отдельной вкладкой».</p>';
+    }
+    wrap.innerHTML = html;
+    document.getElementById('resultsCard').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){
+    sum.innerHTML = 'Ошибка загрузки сигналов: ' + esc(e);
+  }
+}
+
+async function showBacktest(){
+  const sum = document.getElementById('resultsSummary');
+  const wrap = document.getElementById('resultsTableWrap');
+  sum.style.display = 'block';
+  sum.innerHTML = 'Загружаю анализ…';
+  wrap.innerHTML = '';
+  try{
+    const j = await (await fetch(API + '/api/results/backtest?t=' + Date.now())).json();
+    if(!j.ok){
+      sum.innerHTML = '<strong>Анализа нет.</strong> ' + esc(j.error || '');
+      return;
+    }
+    const sumR = Number(j.sum_R);
+    const sumColor = sumR > 0 ? '#1f6f4a' : (sumR < 0 ? '#8b2e2e' : '#1a1f1c');
+    const sumBg = sumR > 0 ? '#e7f3ec' : (sumR < 0 ? '#fdeeee' : '#fcfbf8');
+    sum.innerHTML =
+      '<strong>Результат шага 2 — бэктест на истории MT5 (M1)</strong><br/>' +
+      esc(j.message) +
+      '<div style="margin-top:10px">' +
+      '<span class="metric">Сигналов: <b>' + j.count + '</b></span>' +
+      '<span class="metric" style="background:#e7f3ec;border-color:#9fd0b4;color:#1f6f4a">TP: <b>' + j.tp + '</b></span>' +
+      '<span class="metric" style="background:#fdeeee;border-color:#e8b4b4;color:#8b2e2e">SL: <b>' + j.sl + '</b></span>' +
+      '<span class="metric">Winrate: <b>' + j.winrate + '%</b></span>' +
+      '<span class="metric" style="background:' + sumBg + ';color:' + sumColor + ';border-color:' + (sumR < 0 ? '#e8b4b4' : (sumR > 0 ? '#9fd0b4' : '#d8d3c8')) + '">Сумма: <b>' + j.sum_R + 'R</b></span>' +
+      '</div>' +
+      '<div class="hint" style="color:#ddd;margin-top:8px">Файлы: SignalKit\\\\output\\\\backtest\\\\backtest_latest.md и .csv</div>';
+
+    let html = '<table class="res" style="margin-top:12px"><thead><tr>' +
+      '<th>Дата</th><th>Цепочка</th><th>Символ</th><th>Сторона</th><th>Итог</th><th>PnL R</th><th>Entry</th><th>SL</th><th>TP</th><th>Заметка</th>' +
+      '</tr></thead><tbody>';
+    for(const r of (j.rows || [])){
+      const color = r.outcome === 'TP' ? '#1f6f4a' : (r.outcome === 'SL' ? '#8b2e2e' : '#5c6560');
+      const bg = r.outcome === 'TP' ? '#e7f3ec' : (r.outcome === 'SL' ? '#fdeeee' : (r.outcome === 'MANUAL' ? '#fff7e6' : ''));
+      html += '<tr style="background:' + bg + '">' +
+        '<td>' + esc(r.date) + '</td>' +
+        '<td>' + esc(r.chain_id || '') + '</td>' +
+        '<td><b>' + esc(r.symbol) + '</b></td>' +
+        '<td>' + esc(r.side) + '</td>' +
+        '<td style="color:' + color + ';font-weight:700">' + esc(r.outcome) + '</td>' +
+        '<td style="color:' + color + ';font-weight:700">' + esc(r.pnl_R) + '</td>' +
+        '<td>' + esc(r.entry) + '</td>' +
+        '<td>' + esc(r.sl) + '</td>' +
+        '<td>' + esc(r.tp) + '</td>' +
+        '<td>' + esc(r.note || '') + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    document.getElementById('resultsCard').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){
+    sum.innerHTML = 'Ошибка загрузки анализа: ' + esc(e);
+  }
+}
+
+async function runJob(name){
+  const logEl = document.getElementById('log');
+  const badge = document.getElementById('jobBadge');
+  logEl.textContent = '[' + new Date().toLocaleTimeString() + '] Кнопка нажата: ' + name + '\nПроверяю движок…';
+  badge.textContent = 'запуск…';
+  try{
+    const alive = await ping();
+    if(!alive){
+      logEl.textContent += '\nОШИБКА: движок не отвечает. Запустите START.bat';
+      badge.textContent = 'ошибка';
+      return;
+    }
+    logEl.textContent += '\nДвижок OK. Отправляю задачу…';
+
+    if(name === 'parse'){
+      const st = await (await fetch(API + '/api/tg/status')).json();
+      const mode = (document.getElementById('fetch_mode') || {}).value || 'telethon';
+      logEl.textContent += '\nРежим: ' + mode + ', Telegram: ' + (st.authorized ? 'вход есть' : 'НЕТ ВХОДА');
+      if(mode === 'telethon' && !st.authorized){
+        logEl.textContent += '\nСначала войдите (Подключить готовую сессию).';
+        document.getElementById('tgLoginBox').style.display = 'block';
+        badge.textContent = 'нужен вход';
+        return;
+      }
+    }
+
+    const r = await fetch(API + '/api/run/' + name, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:'{}'
+    });
+    const j = await r.json();
+    if(j.log && !j.job_id){
+      logEl.textContent = j.log || j.error || JSON.stringify(j);
+      badge.textContent = j.ok ? 'готово' : 'ошибка';
+      return;
+    }
+    if(!j.ok || !j.job_id){
+      logEl.textContent += '\nНе удалось запустить: ' + (j.error || JSON.stringify(j));
+      badge.textContent = 'ошибка';
+      return;
+    }
+    logEl.textContent += '\nЗадача запущена, id=' + j.job_id.slice(0,8) + '\nСмотрите журнал… затем блок «Результаты» ниже.\n';
+    badge.textContent = 'работает…';
+    await pollJob(j.job_id, name);
+  }catch(e){
+    logEl.textContent += '\nJS ОШИБКА: ' + e;
+    badge.textContent = 'ошибка';
+  }
+}
+
+async function pollJob(jobId, jobName){
+  const logEl = document.getElementById('log');
+  const badge = document.getElementById('jobBadge');
+  let guard = 0;
+  while(guard < 3600){
+    guard++;
+    try{
+      const r = await fetch(API + '/api/job/' + jobId + '?t=' + Date.now());
+      const j = await r.json();
+      if(j.log) logEl.textContent = j.log;
+      logEl.scrollTop = logEl.scrollHeight;
+      if(j.done){
+        badge.textContent = j.success ? 'готово' : 'ошибка';
+        logEl.textContent += j.success ? '\n\n=== УСПЕШНО — смотрите блок «Результаты» ниже ===' : '\n\n=== ОШИБКА ===';
+        if(j.success){
+          if(jobName === 'parse') await showSignals();
+          if(jobName === 'backtest') await showBacktest();
+        }
+        return;
+      }
+      badge.textContent = 'работает… ' + (j.lines || 0) + ' строк';
+    }catch(e){
+      logEl.textContent += '\nОшибка опроса: ' + e;
+    }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  badge.textContent = 'таймаут';
+}
+
+document.getElementById('btnParse').addEventListener('click', () => runJob('parse'));
+document.getElementById('btnBacktest').addEventListener('click', () => runJob('backtest'));
+document.getElementById('btnLive').addEventListener('click', () => runJob('live_prep'));
+document.getElementById('btnShowSignals').addEventListener('click', () => showSignals());
+document.getElementById('btnShowBacktest').addEventListener('click', () => showBacktest());
+
+loadCfg().then(() => { showSignals().catch(()=>{}); });
+setInterval(ping, 5000);
+setInterval(refreshTgStatus, 8000);
+</script>
+</body>
+</html>
