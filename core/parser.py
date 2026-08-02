@@ -105,6 +105,8 @@ def rules_from_settings(cp) -> ParseRules:
         + mr.words_breakeven
         + mr.words_close
         + mr.words_modify_sl
+        + mr.words_modify_tp
+        + mr.words_clear_expiry
         + mr.words_add
         + mr.words_to_market
         + inherit
@@ -116,6 +118,8 @@ def rules_from_settings(cp) -> ParseRules:
             "открываем по рынку",
             "стоп лосс",
             "stop loss",
+            "тейк профит",
+            "take profit",
             "entry",
         ]
     )
@@ -526,6 +530,20 @@ def build_signal(
             tp = 0.0
         else:
             tp_open = False
+
+        # «Тейк профит выставляем на 1.31920» — смена TP в сопровождении
+        if tp <= 0:
+            m_tp_set = re.search(
+                rf"(?:тейк[\s\-]*профит|take[\s\-]*profit|\btp\b)\s*"
+                rf"(?:выставляем|ставим|меняем|переносим|двигаем|set|to|at)?\s*"
+                rf"(?:на\s*)?:?\s*{_PRICE_RE}",
+                text,
+                re.IGNORECASE,
+            )
+            if m_tp_set:
+                tp = parse_price(m_tp_set.group(1))
+                if tp > 0:
+                    tp_open = False
 
         # короткий формат / добор, если ещё пусто
         short = re.search(

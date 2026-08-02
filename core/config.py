@@ -150,6 +150,8 @@ def export_live_rules(cp: configparser.ConfigParser) -> Path | None:
         f"manage_words_be={g('manage', 'words_breakeven')}",
         f"manage_words_close={g('manage', 'words_close')}",
         f"manage_words_modify={g('manage', 'words_modify_sl')}",
+        f"manage_words_modify_tp={g('manage', 'words_modify_tp', 'тейк профит выставляем|тейк профит ставим|тейк профит меняем|take profit to')}",
+        f"manage_words_clear_expiry={g('manage', 'words_clear_expiry', 'убираем дату истечения|ордер до отмены|gtc')}",
         f"manage_words_market={g('manage', 'words_to_market')}",
         f"manage_words_inherit={g('manage', 'words_inherit_levels', 'не меняем|без изменений|параметры без|остальные параметры')}",
         f"manage_words_levels={g('manage', 'words_modify_levels', 'меняем цену|цену открытия на|сменили цен|переставляем лимит')}",

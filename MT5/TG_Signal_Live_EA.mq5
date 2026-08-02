@@ -16,7 +16,7 @@
 #include <Trade/OrderInfo.mqh>
 
 input group "=== Telegram ==="
-input string InpChannel          = "";  // пусто = брать из parse_rules.txt
+input string InpChannel          = "";
 input int    InpPollSeconds      = 10;
 input bool   InpIgnoreHistory    = true;
 input int    InpMaxSignalAgeSec  = 3600;

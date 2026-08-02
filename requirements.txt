@@ -1,3 +1,4 @@
 telethon>=1.36.0
 MetaTrader5>=5.0.45
 pandas>=2.0.0
+hcc-reader @ git+https://github.com/hungpixi/hcc-reader.git

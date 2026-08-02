@@ -37,6 +37,8 @@ class ManageRules:
     words_breakeven: list[str] = field(default_factory=list)
     words_close: list[str] = field(default_factory=list)
     words_modify_sl: list[str] = field(default_factory=list)
+    words_modify_tp: list[str] = field(default_factory=list)
+    words_clear_expiry: list[str] = field(default_factory=list)
     words_add: list[str] = field(default_factory=list)
     words_to_market: list[str] = field(default_factory=list)
     words_keep_pending: list[str] = field(default_factory=list)
@@ -56,7 +58,11 @@ def manage_from_settings(cp) -> ManageRules:
                 cp,
                 "manage",
                 "words_cancel_pending",
-                "лимитный ордер удаляем|ордер удаляем|лимитку удаляем|удаляем лимит|лимитный ордер снимаем",
+                "лимитный ордер удаляем|ордер удаляем|лимитку удаляем|удаляем лимит|"
+                "лимитный ордер снимаем|не ушел в работу|не ушёл в работу|"
+                "сценарий уже не актуален|сценарий не актуален|уже не актуален|"
+                "ордер снимаем|снимаем ордер|отменяем ордер|order not filled|"
+                "idea no longer valid|setup invalid",
             )
         ),
         words_reverse=_split_list(
@@ -81,7 +87,10 @@ def manage_from_settings(cp) -> ManageRules:
                 cp,
                 "manage",
                 "words_close",
-                "закрываем полностью|закрываем сделку|выходим из сделки|фиксируем всю|закрыли всю",
+                "фиксируем прибыль|фиксируем сделку|фиксируем обе|фиксируем полностью|"
+                "фиксируем всю|фиксируем результат|закрываем полностью|закрываем сделку|"
+                "закрываем обе|выходим из сделки|закрыли сделку|закрыли полностью|"
+                "close trade|close position|close fully|book profit|take profit fully",
             )
         ),
         words_modify_sl=_split_list(
@@ -91,6 +100,25 @@ def manage_from_settings(cp) -> ManageRules:
                 "words_modify_sl",
                 "стоп лосс перемещаем|стоп лосс меняем|стоп лосс по открытой|меняем стоп|"
                 "выставляем стоп|стоп лосс обратно|стоп лосс на|выставляем стоп лосс",
+            )
+        ),
+        words_modify_tp=_split_list(
+            cfg.get(
+                cp,
+                "manage",
+                "words_modify_tp",
+                "тейк профит выставляем|тейк профит ставим|тейк профит меняем|"
+                "тейк профит переносим|тейк профит на|выставляем тейк|меняем тейк|"
+                "take profit to|tp to|set tp",
+            )
+        ),
+        words_clear_expiry=_split_list(
+            cfg.get(
+                cp,
+                "manage",
+                "words_clear_expiry",
+                "убираем дату истечения|ордер до отмены|без даты истечения|"
+                "good till cancel|gtc|remove expiry|no expiry|until cancelled|until canceled",
             )
         ),
         words_add=_split_list(
@@ -144,9 +172,18 @@ def detect_action(text: str, mr: ManageRules, formal: bool) -> str:
     # даже если в комментарии упомянут безубыток как план.
     if formal:
         return "open"
-    # полное закрытие раньше BE: «у точки входа, закрываем сделку»
-    if _has(tl, mr.words_close):
+    # полное закрытие раньше BE: «фиксируем прибыль», «закрываем сделку»
+    if _is_close_text(tl, mr):
         return "close"
+    # снятие неактуального лимита
+    if _is_cancel_pending_text(tl, mr):
+        # «удаляем лимит и открываем по рынку» — replace, не чистый cancel
+        if _has(tl, mr.words_to_market) or "цена открытия" in tl or _has(tl, mr.words_inherit_levels):
+            if _has(tl, mr.words_cancel_pending) or re.search(
+                r"лимит\w*\s+ордер\s+удаля|ордер\s+удаля|лимитку\s+удаля", tl
+            ):
+                return "replace_market"
+        return "cancel_pending"
     # безубыток / перенос стопа на вход
     if _is_breakeven_text(tl, mr):
         return "breakeven"
@@ -154,6 +191,12 @@ def detect_action(text: str, mr: ManageRules, formal: bool) -> str:
         r"закрыва\w+\s+(?:продаж|покуп|шорт|лонг).{0,40}(?:заходим|открываем)", tl
     ):
         return "reverse"
+    # смена TP: «тейк профит выставляем на …»
+    if _is_modify_tp_text(tl, mr):
+        return "modify_tp"
+    # убрать дату истечения / GTC
+    if _is_clear_expiry_text(tl, mr):
+        return "clear_expiry"
     # смена уровней лимита: «меняем цену открытия на …»
     if _is_modify_levels_text(tl):
         return "modify_levels"
@@ -175,6 +218,105 @@ def detect_action(text: str, mr: ManageRules, formal: bool) -> str:
     if _has(tl, mr.words_to_market) or "цена открытия" in tl or "стоп лосс" in tl:
         return "replace_or_open"
     return "manage"
+
+
+_CLOSE_RE = re.compile(
+    r"(?:"
+    r"фиксир\w*\s+(?:прибыл|сделк|обе|полност|всю|результат|позиц)"
+    r"|закрыв\w*\s+(?:полност|сделк|обе|позиц|всю)"
+    r"|выходим\s+из\s+сделк"
+    r"|закрыли\s+(?:сделк|полност|позиц|всю)"
+    r"|close(?:\s+the)?\s+(?:trade|position|fully)"
+    r"|closing\s+(?:the\s+)?(?:trade|position)"
+    r"|book\s+profits?"
+    r"|take\s+profits?\s+fully"
+    r"|fully\s+closed?"
+    r")",
+    re.IGNORECASE,
+)
+
+_CANCEL_RE = re.compile(
+    r"(?:"
+    r"не\s+уш[её]л\s+в\s+работ"
+    r"|сценарий\s+(?:уже\s+)?не\s+актуал"
+    r"|(?:уже\s+)?не\s+актуален"
+    r"|ордер\s+снима"
+    r"|снимаем\s+(?:лимит|ордер)"
+    r"|отменяем\s+(?:лимит|ордер)"
+    r"|order\s+(?:not\s+filled|cancelled|canceled)"
+    r"|idea\s+(?:is\s+)?no\s+longer\s+valid"
+    r"|setup\s+(?:is\s+)?invalid"
+    r")",
+    re.IGNORECASE,
+)
+
+_MODIFY_TP_RE = re.compile(
+    r"(?:"
+    r"тейк[\s\-]*профит\s*(?:выставляем|ставим|меняем|переносим|двигаем)?\s*(?:на\s*)?:?"
+    r"|выставляем\s+тейк"
+    r"|меняем\s+тейк"
+    r"|take[\s\-]*profit\s*(?:to|at|=)?"
+    r"|\btp\s*(?:to|at|=|set)?"
+    r")\s*"
+    r"(\d{1,6}(?:[.,]\d{1,6})?)",
+    re.IGNORECASE,
+)
+
+_CLEAR_EXPIRY_RE = re.compile(
+    r"(?:"
+    r"убираем\s+дат[уы]\s+истечен"
+    r"|ордер\s+до\s+отмен"
+    r"|без\s+дат[ыи]\s+истечен"
+    r"|good\s+till\s+cancel|\bgtc\b"
+    r"|remove\s+expir"
+    r"|no\s+expiry"
+    r"|until\s+cancell?ed"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_close_text(tl: str, mr: ManageRules) -> bool:
+    """Полное закрытие позиции (не «пока держим»)."""
+    if _has(tl, mr.words_close):
+        return True
+    if _CLOSE_RE.search(tl or ""):
+        # «закрываем продажу и открываем покупку» — это reverse, не close
+        if re.search(
+            r"закрыва\w+\s+(?:продаж|покуп|шорт|лонг).{0,40}(?:заходим|открываем|перезаход)",
+            tl or "",
+        ):
+            return False
+        return True
+    return False
+
+
+def _is_cancel_pending_text(tl: str, mr: ManageRules) -> bool:
+    if _has(tl, mr.words_cancel_pending):
+        return True
+    return bool(_CANCEL_RE.search(tl or ""))
+
+
+def _is_modify_tp_text(tl: str, mr: ManageRules) -> bool:
+    if _has(tl, mr.words_modify_tp):
+        return True
+    return bool(_MODIFY_TP_RE.search(tl or ""))
+
+
+def extract_modify_tp_price(text: str) -> float:
+    """Цена нового TP из текста сопровождения."""
+    from .parser import parse_price
+
+    m = _MODIFY_TP_RE.search(text or "")
+    if m:
+        return parse_price(m.group(1))
+    return 0.0
+
+
+def _is_clear_expiry_text(tl: str, mr: ManageRules) -> bool:
+    if _has(tl, mr.words_clear_expiry):
+        return True
+    return bool(_CLEAR_EXPIRY_RE.search(tl or ""))
 
 
 def _fill_from_chain(s: Any, st: dict) -> None:
@@ -393,7 +535,9 @@ def build_chains(
                 "breakeven",
                 "cancel_pending",
                 "modify_sl",
+                "modify_tp",
                 "modify_levels",
+                "clear_expiry",
                 "replace_market",
                 "replace_or_open",
                 "reverse",
@@ -401,8 +545,12 @@ def build_chains(
             if inherit and action in ("manage", "open", "replace_or_open"):
                 action = "replace_market"
                 soft_ok = True
+            if action == "modify_tp" and float(getattr(s, "tp", 0) or 0) <= 0:
+                s.tp = extract_modify_tp_price(s.raw_text or "")
             # «меняем цену» часто без стороны — достаточно entry (+sl)
             if action == "modify_levels" and float(getattr(s, "entry", 0) or 0) <= 0:
+                soft_ok = False
+            if action == "modify_tp" and float(getattr(s, "tp", 0) or 0) <= 0:
                 soft_ok = False
             if s.symbol and soft_ok:
                 expire_stale(s.symbol, now, s.message_id)
@@ -611,6 +759,94 @@ def build_chains(
                         annotated.append(s)
                         continue
 
+                    if action == "modify_tp":
+                        new_tp = float(s.tp) if float(s.tp or 0) > 0 else extract_modify_tp_price(
+                            s.raw_text or ""
+                        )
+                        if new_tp <= 0:
+                            s.role = "noise"
+                            annotated.append(s)
+                            continue
+                        s.role = "manage"
+                        s.action = "modify_tp"
+                        s.chain_id = st["chain_id"]
+                        s.parent_id = st["root_id"]
+                        s.parse_ok = True
+                        s.side = s.side or st["side"]
+                        s.entry = s.entry or st["entry"]
+                        s.sl = s.sl or st["sl"]
+                        s.tp = new_tp
+                        s.tp_open = False
+                        s.order_type = s.order_type or st["order_type"]
+                        s.parse_note = (s.parse_note or "") + "|chain=modify_tp"
+                        events.append(
+                            TimelineEvent(
+                                chain_id=st["chain_id"],
+                                root_id=st["root_id"],
+                                msg_id=s.message_id,
+                                time_utc=s.date_utc,
+                                symbol=s.symbol,
+                                action="modify_levels",
+                                side=st["side"],
+                                order_type=st["order_type"],
+                                entry=st["entry"],
+                                sl=st["sl"],
+                                tp=new_tp,
+                                tp_open=False,
+                                parent_id=st["root_id"],
+                                note="modify_tp",
+                                link=s.link,
+                            )
+                        )
+                        st["tp"] = new_tp
+                        st["tp_open"] = False
+                        st["last_dt"] = now
+                        st["last_id"] = s.message_id
+                        chains_map[st["chain_id"]].msg_ids.append(s.message_id)
+                        chains_map[st["chain_id"]].events.append("modify_tp")
+                        annotated.append(s)
+                        continue
+
+                    if action == "clear_expiry":
+                        s.role = "manage"
+                        s.action = "clear_expiry"
+                        s.chain_id = st["chain_id"]
+                        s.parent_id = st["root_id"]
+                        s.parse_ok = True
+                        s.side = s.side or st["side"]
+                        s.entry = s.entry or st["entry"]
+                        s.sl = s.sl or st["sl"]
+                        s.tp = s.tp or st["tp"]
+                        s.order_type = s.order_type or st["order_type"]
+                        s.parse_note = (s.parse_note or "") + "|chain=clear_expiry"
+                        events.append(
+                            TimelineEvent(
+                                chain_id=st["chain_id"],
+                                root_id=st["root_id"],
+                                msg_id=s.message_id,
+                                time_utc=s.date_utc,
+                                symbol=s.symbol,
+                                action="clear_expiry",
+                                side=st["side"],
+                                order_type=st["order_type"],
+                                entry=st["entry"],
+                                sl=st["sl"],
+                                tp=st["tp"],
+                                tp_open=st["tp_open"],
+                                parent_id=st["root_id"],
+                                note="gtc",
+                                link=s.link,
+                            )
+                        )
+                        st["gtc"] = True
+                        st.pop("expire_at", None)
+                        st["last_dt"] = now
+                        st["last_id"] = s.message_id
+                        chains_map[st["chain_id"]].msg_ids.append(s.message_id)
+                        chains_map[st["chain_id"]].events.append("clear_expiry")
+                        annotated.append(s)
+                        continue
+
                     if action == "breakeven":
                         new_sl = float(st["entry"])
                         ev_action = "modify_sl"
@@ -664,6 +900,9 @@ def build_chains(
                     st["last_dt"] = now
                     st["last_id"] = s.message_id
                     if action == "close":
+                        chains_map[st["chain_id"]].closed = True
+                        active.pop(s.symbol, None)
+                    elif action == "cancel_pending":
                         chains_map[st["chain_id"]].closed = True
                         active.pop(s.symbol, None)
                     annotated.append(s)
@@ -981,6 +1220,70 @@ def build_chains(
             st["last_id"] = s.message_id
             chains_map[cid].msg_ids.append(s.message_id)
             chains_map[cid].events.append("cancel_pending")
+            chains_map[cid].closed = True
+            active.pop(s.symbol, None)
+
+        elif action == "modify_tp":
+            new_tp = float(s.tp) if float(s.tp or 0) > 0 else extract_modify_tp_price(s.raw_text or "")
+            if new_tp <= 0:
+                annotated.append(s)
+                continue
+            s.action = "modify_tp"
+            s.tp = new_tp
+            s.tp_open = False
+            events.append(
+                TimelineEvent(
+                    chain_id=cid,
+                    root_id=st["root_id"],
+                    msg_id=s.message_id,
+                    time_utc=s.date_utc,
+                    symbol=s.symbol,
+                    action="modify_levels",
+                    side=st["side"],
+                    order_type=st["order_type"],
+                    entry=st["entry"],
+                    sl=st["sl"],
+                    tp=new_tp,
+                    tp_open=False,
+                    parent_id=st["root_id"],
+                    note="modify_tp",
+                    link=s.link,
+                )
+            )
+            st["tp"] = new_tp
+            st["tp_open"] = False
+            st["last_dt"] = now
+            st["last_id"] = s.message_id
+            chains_map[cid].msg_ids.append(s.message_id)
+            chains_map[cid].events.append("modify_tp")
+
+        elif action == "clear_expiry":
+            s.action = "clear_expiry"
+            events.append(
+                TimelineEvent(
+                    chain_id=cid,
+                    root_id=st["root_id"],
+                    msg_id=s.message_id,
+                    time_utc=s.date_utc,
+                    symbol=s.symbol,
+                    action="clear_expiry",
+                    side=st["side"],
+                    order_type=st["order_type"],
+                    entry=st["entry"],
+                    sl=st["sl"],
+                    tp=st["tp"],
+                    tp_open=st["tp_open"],
+                    parent_id=st["root_id"],
+                    note="gtc",
+                    link=s.link,
+                )
+            )
+            st["gtc"] = True
+            st.pop("expire_at", None)
+            st["last_dt"] = now
+            st["last_id"] = s.message_id
+            chains_map[cid].msg_ids.append(s.message_id)
+            chains_map[cid].events.append("clear_expiry")
 
         elif action in ("modify_sl", "breakeven"):
             if action == "breakeven":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -28,35 +29,33 @@ async def _client(api_id: int, api_hash: str, session_path: str | Path | None = 
 
 
 def _candidate_sessions() -> list[Path]:
-    """Только локальная сессия этого проекта (без чужих папок)."""
+    """Только локальная сессия проекта (без чужих соседних папок)."""
     root = cfg.ROOT
-    names = [
-        root / "tg_session.session",
-    ]
-    out: list[Path] = []
-    for p in names:
-        if p.exists() and p.stat().st_size > 0:
-            out.append(p)
-    return out
+    p = root / "tg_session.session"
+    if p.exists() and p.stat().st_size > 0:
+        return [p]
+    return []
 
 
 def import_existing_session() -> dict:
-    """Проверить, есть ли уже рабочая локальная сессия tg_session."""
+    """Скопировать первую рабочую соседнюю сессию в SignalKit/tg_session."""
     cp = cfg.load_settings()
     api_id = cfg.get(cp, "telegram", "api_id")
     api_hash = cfg.get(cp, "telegram", "api_hash")
     if not api_id or not api_hash:
         return {"ok": False, "error": "Нет api_id / api_hash"}
 
+    dest = Path(str(cfg.SESSION_PATH) + ".session")
+    # TelegramClient path is without .session suffix; file is path.session
     dest_file = Path(str(cfg.SESSION_PATH) + ".session")
 
     async def _try_one(sess_file: Path) -> dict | None:
+        # telethon session name = without .session
         base = str(sess_file)[:-8] if sess_file.name.endswith(".session") else str(sess_file)
         client = await _client(int(api_id), api_hash, base)
         await client.connect()
         ok = await client.is_user_authorized()
         me = None
-        phone = None
         if ok:
             u = await client.get_me()
             me = getattr(u, "username", None) or str(u.id)
@@ -64,7 +63,17 @@ def import_existing_session() -> dict:
         await client.disconnect()
         if not ok:
             return None
-        return {"ok": True, "imported": False, "user": me, "phone": phone, "source": str(sess_file)}
+        # не копируем сами в себя
+        try:
+            if sess_file.resolve() == dest_file.resolve():
+                return {"ok": True, "imported": False, "user": me, "phone": phone, "source": str(sess_file)}
+        except Exception:
+            pass
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        if dest_file.exists():
+            shutil.copy2(dest_file, dest_file.with_suffix(dest_file.suffix + ".bak"))
+        shutil.copy2(sess_file, dest_file)
+        return {"ok": True, "imported": True, "user": me, "phone": phone, "source": str(sess_file)}
 
     for sess in _candidate_sessions():
         try:
@@ -72,6 +81,7 @@ def import_existing_session() -> dict:
         except Exception:
             continue
         if res and res.get("ok"):
+            # обновить phone в настройках
             if res.get("phone"):
                 if not cp.has_section("telegram"):
                     cp.add_section("telegram")
@@ -80,20 +90,21 @@ def import_existing_session() -> dict:
                     phone = "+" + str(phone)
                 cp.set("telegram", "phone", phone)
                 cfg.save_settings(cp)
-            res["message"] = (
+            msg = (
                 f"Вход готов ({res.get('user')}). "
-                "Текущая сессия уже рабочая. Можно нажимать «Скачать сигналы»."
+                + ("Сессия подключена. " if res.get("imported") else "Текущая сессия уже рабочая. ")
+                + "Можно нажимать «Скачать сигналы»."
             )
+            res["message"] = msg
             return res
 
     return {
         "ok": False,
         "error": (
-            "Готовой сессии не найдено. Пройдите вход по коду из Telegram "
-            "(кнопка «Отправить код» в панели) или положите свой файл "
-            "tg_session.session в корень проекта. "
-            "Код обычно приходит в чат «Telegram» в приложении. "
-            "Либо используйте fetch_mode=web для короткой публичной ленты."
+            "Готовой сессии не найдено. Telegram больше не шлёт SMS через API "
+            "(force_sms устарел). Код обычно приходит в чат «Telegram» в приложении. "
+            "Если кода нет — войдите один раз через Telethon в корневом проекте "
+            "или используйте fetch_mode=web."
         ),
     }
 
@@ -136,20 +147,24 @@ def status() -> dict:
             "user": me,
         }
 
-    # не авторизованы
-    local_sess = (cfg.ROOT / "tg_session.session").exists()
+    # не авторизованы — предложим импорт
+    has_other = any(
+        p.name != "tg_session.session" for p in _candidate_sessions()
+    )
     return {
         "authorized": False,
         "need": "login",
         "message": (
-            "Нужен вход в Telegram: укажите phone, сохраните, нажмите «Отправить код». "
-            "Код приходит в чат «Telegram» в приложении (не SMS). "
-            "Либо переключите fetch_mode=web для короткой публичной ленты."
+            "Нужен вход в Telegram. Нажмите «Подключить готовую сессию» "
+            "(если раньше уже входили в этом проекте) — так надёжнее, чем код."
+            if has_other
+            else "Нужен вход: код приходит в чат «Telegram» в приложении (не SMS). "
+            "Или переключите режим на web."
         ),
         "phone": phone,
         "waiting_code": bool(_STATE.get("phone_code_hash")),
         "need_password": bool(_STATE.get("need_password")),
-        "can_import": local_sess,
+        "can_import": has_other,
     }
 
 
@@ -166,7 +181,7 @@ def send_code(phone: str | None = None, force_sms: bool = False) -> dict:
     if not phone.startswith("+"):
         return {
             "ok": False,
-            "error": "Телефон должен быть в международном формате, например +79001234567",
+            "error": "Телефон должен быть в международном формате, например +375... или +7...",
         }
 
     if not cp.has_section("telegram"):

@@ -104,46 +104,411 @@ def pnl_R(side, open_px, close_px, sl):
     return (open_px - close_px) / risk
 
 
-def _load_rates(mt5, broker, start_utc: datetime, tf_const, tf_name: str = "M1"):
-    """Загрузка истории; для M1 — кусками (у MT5 лимит на большой диапазон)."""
+def _bars_needed_for_span(start_utc: datetime, tf_name: str) -> int:
+    """Грубая оценка числа баров от start до сейчас (+ запас)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if start_utc.tzinfo is not None:
+        start_utc = start_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    days = max(1.0, (now - start_utc).total_seconds() / 86400.0 + 7)
+    tf = tf_name.upper()
+    minutes = 1
+    if tf.startswith("M") and tf[1:].isdigit():
+        minutes = int(tf[1:])
+    elif tf.startswith("H") and tf[1:].isdigit():
+        minutes = 60 * int(tf[1:])
+    elif tf.startswith("D"):
+        minutes = 1440
+    # forex ~5/7 суток
+    return int(days * (1440 / minutes) * (5 / 7) * 1.15) + 5000
+
+
+def ensure_mt5_maxbars(mt5, min_bars: int = 1_000_000) -> bool:
+    """
+    MT5 API отдаёт не больше MaxBars баров (~100000 ≈ 3 мес M1).
+    Поднимаем MaxBars в common.ini. Возвращает True, если лимит уже достаточен.
+    Если нет — правим ini и печатаем предупреждение (историю всё равно можно
+    добрать из локальных .hcc).
+    """
+    info = mt5.terminal_info()
+    if info is None:
+        raise RuntimeError("MT5: нет terminal_info()")
+    current = int(getattr(info, "maxbars", 0) or 0)
+    data_path = Path(str(info.data_path))
+    ini = data_path / "config" / "common.ini"
+    target = max(min_bars, 1_000_000)
+
+    if current >= min_bars:
+        print(f"MT5 MaxBars={current} (достаточно для M1)", flush=True)
+        return True
+
+    patched = False
+    if ini.exists():
+        raw = ini.read_bytes()
+        enc = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8"
+        text = ini.read_text(encoding=enc)
+        if "MaxBars=" in text:
+            import re
+
+            new_text, n = re.subn(
+                r"(?m)^MaxBars=\d+",
+                f"MaxBars={target}",
+                text,
+                count=1,
+            )
+            if n and new_text != text:
+                ini.write_text(new_text, encoding=enc)
+                patched = True
+        if not patched and "[Charts]" in text:
+            text = text.replace("[Charts]", f"[Charts]\nMaxBars={target}", 1)
+            ini.write_text(text, encoding=enc)
+            patched = True
+
+    print(
+        f"! MT5 MaxBars={current} (~{max(1, current // 28800)} мес. M1). "
+        f"Для полного API-доступа нужно ≥{min_bars}.",
+        flush=True,
+    )
+    print(
+        "  Рекомендуется: Сервис → Настройки → Графики → макс. баров = Unlimited, "
+        "затем полный перезапуск MT5.",
+        flush=True,
+    )
+    if patched:
+        print(f"  Уже прописано MaxBars={target} в {ini}", flush=True)
+    print("  Пока догружаю M1 из локальных файлов истории (.hcc)…", flush=True)
+    return False
+
+
+def _history_dir(mt5, broker: str) -> Path | None:
+    info = mt5.terminal_info()
+    acc = mt5.account_info()
+    if info is None or acc is None:
+        return None
+    base = Path(str(info.data_path)) / "bases" / str(acc.server) / "history" / broker
+    if base.is_dir():
+        return base
+    # иногда имя сервера в пути отличается регистром/дефисом
+    bases = Path(str(info.data_path)) / "bases"
+    if not bases.is_dir():
+        return None
+    for srv in bases.iterdir():
+        cand = srv / "history" / broker
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def _hcc_cache_dir(broker: str) -> Path:
+    d = cfg.OUTPUT_DIR / "history_hcc" / broker
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _try_copy_hcc(src: Path, dst: Path) -> bool:
+    import shutil
+
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return dst.exists() and dst.stat().st_size > 1000
+    except OSError:
+        return False
+
+
+def _restart_mt5_to_unlock_hcc(mt5, copy_jobs: list[tuple[Path, Path]]) -> bool:
+    """Кратко закрывает MT5, копирует заблокированные .hcc, снова открывает."""
+    import shutil
+    import subprocess
+    import time
+
+    info = mt5.terminal_info()
+    if info is None:
+        return False
+    term = Path(str(info.path)) / "terminal64.exe"
+    if not term.exists():
+        term = Path(str(info.path)) / "terminal.exe"
+    if not term.exists():
+        print(f"  ! не найден terminal.exe в {info.path}", flush=True)
+        return False
+
+    print(
+        "  MT5 блокирует файлы истории текущего года (.hcc). "
+        "На 10–20 сек перезапускаю терминал, чтобы скопировать M1…",
+        flush=True,
+    )
+    mt5.shutdown()
+    subprocess.run(
+        ["taskkill", "/IM", "terminal64.exe", "/F"],
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["taskkill", "/IM", "terminal.exe", "/F"],
+        capture_output=True,
+        text=True,
+    )
+    time.sleep(2.5)
+
+    ok_n = 0
+    for src, dst in copy_jobs:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            ok_n += 1
+            print(f"      скопирован {src.parent.name}/{src.name} → cache", flush=True)
+        except OSError as exc:
+            print(f"      ! не скопирован {src}: {exc}", flush=True)
+
+    subprocess.Popen([str(term)], cwd=str(term.parent))
+    for i in range(90):
+        time.sleep(1)
+        if mt5.initialize():
+            acc = mt5.account_info()
+            if acc is not None:
+                print(f"  MT5 снова онлайн ({acc.server}), скопировано файлов: {ok_n}", flush=True)
+                return ok_n > 0
+        if i in (10, 25, 45, 70):
+            print(f"  …жду вход в MT5 ({i}s)", flush=True)
+    print("  ! MT5 не поднялся после перезапуска — продолжаю с тем, что есть", flush=True)
+    mt5.initialize()
+    return ok_n > 0
+
+
+def _prefetch_hcc_for_symbols(mt5, brokers: list[str], start_utc: datetime, end_utc: datetime) -> None:
+    """Готовит читаемые копии .hcc (при необходимости один раз перезапускает MT5)."""
+    if start_utc.tzinfo is not None:
+        start_utc = start_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    if end_utc.tzinfo is not None:
+        end_utc = end_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    years = list(range(start_utc.year, end_utc.year + 1))
+    locked_jobs: list[tuple[Path, Path]] = []
+
+    for broker in brokers:
+        hist = _history_dir(mt5, broker)
+        if hist is None:
+            continue
+        cache = _hcc_cache_dir(broker)
+        for y in years:
+            src = hist / f"{y}.hcc"
+            if not src.exists() or src.stat().st_size < 1000:
+                continue
+            dst = cache / f"{y}.hcc"
+            # актуальный год — обновляем кэш, если исходник доступен
+            if _try_copy_hcc(src, dst):
+                continue
+            if dst.exists() and dst.stat().st_size > 1000:
+                # старый кэш лучше, чем ничего; для текущего года пометим на snapshot
+                if y >= datetime.now(timezone.utc).year:
+                    locked_jobs.append((src, dst))
+                continue
+            locked_jobs.append((src, dst))
+
+    if locked_jobs:
+        # уникальные src
+        uniq: dict[str, tuple[Path, Path]] = {}
+        for src, dst in locked_jobs:
+            uniq[str(src)] = (src, dst)
+        _restart_mt5_to_unlock_hcc(mt5, list(uniq.values()))
+
+
+def _load_rates_from_hcc(mt5, broker: str, start_utc: datetime, end_utc: datetime | None = None):
+    """Чтение M1 напрямую из .hcc / кэша SignalKit (обходит лимит MaxBars и блокировку MT5)."""
+    try:
+        from hcc_reader import read_hcc
+    except ImportError:
+        print(
+            "  ! пакет hcc-reader не установлен — pip install git+https://github.com/hungpixi/hcc-reader.git",
+            flush=True,
+        )
+        return None
+
     import pandas as pd
+
+    hist = _history_dir(mt5, broker)
+    cache = _hcc_cache_dir(broker)
+
+    if start_utc.tzinfo is not None:
+        start_utc = start_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    if end_utc is None:
+        end_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    elif end_utc.tzinfo is not None:
+        end_utc = end_utc.astimezone(timezone.utc).replace(tzinfo=None)
+
+    years = range(start_utc.year, end_utc.year + 1)
+    parts = []
+    for y in years:
+        candidates = []
+        if hist is not None:
+            candidates.append(hist / f"{y}.hcc")
+        candidates.append(cache / f"{y}.hcc")
+        dfy = None
+        used = None
+        for fp in candidates:
+            if not fp.exists() or fp.stat().st_size < 1000:
+                continue
+            try:
+                dfy = read_hcc(str(fp))
+                used = fp
+                break
+            except Exception:
+                continue
+        if dfy is None or len(dfy) == 0:
+            print(f"  · {broker}/{y}.hcc недоступен", flush=True)
+            continue
+        parts.append(dfy)
+        tag = "cache" if used and used.parent == cache else "live"
+        print(f"      hcc {broker}/{y}.hcc → {len(dfy)} bars ({tag})", flush=True)
+
+    if not parts:
+        return None
+
+    df = pd.concat(parts, ignore_index=True)
+    if "datetime" in df.columns:
+        df = df.rename(columns={"datetime": "time"})
+    df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_localize(None)
+    keep = [
+        c
+        for c in ("time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume")
+        if c in df.columns
+    ]
+    df = df[keep].drop_duplicates("time").sort_values("time").reset_index(drop=True)
+    df = df[(df["time"] >= start_utc - timedelta(days=1)) & (df["time"] <= end_utc + timedelta(days=1))]
+    return df.reset_index(drop=True)
+
+
+def _rates_to_df(rates):
+    import pandas as pd
+
+    df = pd.DataFrame(rates)
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_localize(None)
+    return df
+
+
+def _is_stub_chunk(rates, req_start: datetime, req_end: datetime) -> bool:
+    """Один бар-заглушка вне запрошенного окна (типичный ответ MT5 без истории)."""
+    if rates is None or len(rates) == 0:
+        return True
+    if len(rates) >= 5:
+        return False
+
+    t0 = datetime.fromtimestamp(int(rates[0]["time"]), tz=timezone.utc).replace(tzinfo=None)
+    t1 = datetime.fromtimestamp(int(rates[-1]["time"]), tz=timezone.utc).replace(tzinfo=None)
+    # заглушка: все бары правее окна или левее «сейчас» далеко от запроса
+    if t0 > req_end + timedelta(days=2) or t1 < req_start - timedelta(days=3650):
+        return True
+    if len(rates) == 1 and not (req_start - timedelta(days=2) <= t0 <= req_end + timedelta(days=2)):
+        return True
+    return False
+
+
+def _merge_rate_frames(primary, extra):
+    import pandas as pd
+
+    if primary is None or len(primary) == 0:
+        return extra
+    if extra is None or len(extra) == 0:
+        return primary
+    df = (
+        pd.concat([primary, extra], ignore_index=True)
+        .drop_duplicates("time")
+        .sort_values("time")
+        .reset_index(drop=True)
+    )
+    return df
+
+
+def _load_rates(mt5, broker, start_utc: datetime, tf_const, tf_name: str = "M1"):
+    """Загрузка истории: API MT5 кусками + для M1 догрузка из локальных .hcc."""
+    import pandas as pd
+    import time
+
+    mt5.symbol_select(broker, True)
 
     if start_utc.tzinfo is not None:
         start_utc = start_utc.astimezone(timezone.utc).replace(tzinfo=None)
     pad = timedelta(hours=2) if tf_name.upper().startswith("H") else timedelta(minutes=30)
     end = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1)
     start = start_utc - pad
+    tf_u = tf_name.upper()
 
-    # размер куска: M1 ~30 дней, H1 — целиком
-    if tf_name.upper() == "M1":
-        chunk = timedelta(days=25)
-    elif tf_name.upper().startswith("M"):
-        chunk = timedelta(days=120)
+    if tf_u == "M1":
+        chunk = timedelta(days=14)
+        warm_n = 500_000
+        step_n = 80_000
+    elif tf_u.startswith("M"):
+        chunk = timedelta(days=90)
+        warm_n = 100_000
+        step_n = 50_000
     else:
         chunk = timedelta(days=800)
+        warm_n = 50_000
+        step_n = 20_000
+
+    # прогрев локального кэша
+    mt5.copy_rates_from_pos(broker, tf_const, 0, warm_n)
 
     parts = []
     cur = start
     while cur < end:
         nxt = min(cur + chunk, end)
         rates = mt5.copy_rates_range(broker, tf_const, cur, nxt)
-        # отбрасываем «пустые» ответы (1 бар-заглушка без реальной истории)
-        if rates is not None and len(rates) >= 50:
-            parts.append(pd.DataFrame(rates))
+        if _is_stub_chunk(rates, cur, nxt):
+            time.sleep(0.15)
+            rates = mt5.copy_rates_range(broker, tf_const, cur, nxt)
+        if rates is not None and not _is_stub_chunk(rates, cur, nxt):
+            parts.append(_rates_to_df(rates))
         cur = nxt
 
-    if not parts:
-        # запасной вариант — последние N баров
-        n = 100000 if tf_name.upper() == "M1" else 10000
-        rates = mt5.copy_rates_from_pos(broker, tf_const, 0, n)
-        if rates is None or len(rates) == 0:
-            return None
-        df = pd.DataFrame(rates)
-    else:
+    if parts:
         df = pd.concat(parts, ignore_index=True)
+    else:
+        rates = mt5.copy_rates_from_pos(broker, tf_const, 0, warm_n)
+        if rates is None or len(rates) == 0:
+            df = None
+        else:
+            df = _rates_to_df(rates)
 
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_localize(None)
-    df = df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
+    if df is not None and len(df):
+        df = df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
+
+        # догрузка назад через API, пока не упрёмся в MaxBars
+        guard = 0
+        while (
+            len(df)
+            and df["time"].iloc[0].to_pydatetime() > start + timedelta(hours=6)
+            and guard < 80
+        ):
+            guard += 1
+            edge = df["time"].iloc[0].to_pydatetime() - timedelta(minutes=1)
+            rates = mt5.copy_rates_from(broker, tf_const, edge, step_n)
+            if rates is None or len(rates) == 0:
+                time.sleep(0.25)
+                rates = mt5.copy_rates_from(broker, tf_const, edge, step_n)
+            if rates is None or len(rates) == 0:
+                break
+            part = _rates_to_df(rates)
+            new_min = part["time"].min().to_pydatetime()
+            old_min = df["time"].iloc[0].to_pydatetime()
+            if new_min >= old_min - timedelta(seconds=30):
+                break
+            df = _merge_rate_frames(df, part)
+            print(
+                f"      {tf_name} {broker}: API → {df['time'].iloc[0]}  bars={len(df)}",
+                flush=True,
+            )
+
+    # M1: всегда догружаем .hcc (API брокера часто отдаёт только ~3 месяца)
+    if tf_u == "M1":
+        hcc_df = _load_rates_from_hcc(mt5, broker, start, end)
+        if hcc_df is not None and len(hcc_df):
+            before = 0 if df is None else len(df)
+            df = _merge_rate_frames(df, hcc_df)
+            print(
+                f"      M1 {broker}: +hcc → {df['time'].iloc[0]} … {df['time'].iloc[-1]}  "
+                f"bars={len(df)} (было {before})",
+                flush=True,
+            )
+
     return df
 
 
@@ -390,10 +755,31 @@ def run_backtest() -> dict:
         if sym not in earliest or t0 < earliest[sym]:
             earliest[sym] = t0
 
+    # без достаточного MaxBars / при блокировке .hcc API отдаёт мало M1
+    if earliest and tf_name.upper() == "M1":
+        global_earliest = min(earliest.values())
+        need = max(1_000_000, _bars_needed_for_span(global_earliest, tf_name))
+        ensure_mt5_maxbars(mt5, need)
+
     results: list[TradeResult] = []
     cache: dict[str, str | None] = {}
     rates_cache: dict[str, object] = {}
     n_chains = 0
+
+    # заранее резолвим символы и копируем .hcc (один перезапуск MT5 при блокировке)
+    for cid, evs in chains.items():
+        sym = evs[0]["symbol"]
+        if sym not in cache:
+            cache[sym] = resolve_symbol(mt5, sym)
+    if tf_name.upper() == "M1" and earliest:
+        brokers = sorted({b for b in cache.values() if b})
+        global_earliest = min(earliest.values())
+        _prefetch_hcc_for_symbols(
+            mt5,
+            brokers,
+            global_earliest - timedelta(days=1),
+            datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+        )
 
     for cid, evs in chains.items():
         n_chains += 1
@@ -417,26 +803,21 @@ def run_backtest() -> dict:
         if broker not in rates_cache:
             print(f"  загрузка {tf_name} {broker} …", flush=True)
             m1df = _load_rates(mt5, broker, earliest[sym], tf_const, tf_name)
-            rates_cache[broker] = {"primary": m1df, "fallback": None}
+            rates_cache[broker] = {"primary": m1df}
             if m1df is not None and len(m1df):
                 tmin = m1df["time"].iloc[0]
                 tmax = m1df["time"].iloc[-1]
                 print(f"    bars={len(m1df)}  {tmin} … {tmax}", flush=True)
-                # если M1 не покрывает ранние сигналы — подгружаем H1
                 if tmin.to_pydatetime() > earliest[sym] + timedelta(days=2):
-                    print(f"    + fallback H1 (M1 с {tmin.date()})", flush=True)
-                    rates_cache[broker]["fallback"] = _load_rates(
-                        mt5, broker, earliest[sym], mt5.TIMEFRAME_H1, "H1"
+                    print(
+                        f"    ! {tf_name} только с {tmin.date()} (нужно с {earliest[sym].date()})",
+                        flush=True,
                     )
             else:
-                print(f"    {tf_name} пусто → H1", flush=True)
-                rates_cache[broker]["fallback"] = _load_rates(
-                    mt5, broker, earliest[sym], mt5.TIMEFRAME_H1, "H1"
-                )
+                print(f"    {tf_name} пусто для {broker}", flush=True)
 
         pack = rates_cache[broker]
         primary = pack["primary"]
-        fallback = pack["fallback"]
 
         open_idx = [i for i, e in enumerate(evs) if (e.get("action") or "").lower() == "open"]
         if not open_idx:
@@ -455,20 +836,27 @@ def run_backtest() -> dict:
             open_t = _parse_mt5_time(e["time_utc"])
             root = str(e.get("root_id") or cid)
 
-            # выбираем TF: M1 если сигнал внутри покрытия, иначе H1
+            # только выбранный TF (M1) — без fallback на H1
             df = primary
             used_tf = tf_name
             if primary is None or len(primary) == 0:
-                df = fallback
-                used_tf = "H1"
-            else:
-                p0 = primary["time"].iloc[0].to_pydatetime()
-                if open_t < p0 - timedelta(minutes=30):
-                    if fallback is None:
-                        fallback = _load_rates(mt5, broker, earliest[sym], mt5.TIMEFRAME_H1, "H1")
-                        pack["fallback"] = fallback
-                    df = fallback
-                    used_tf = "H1"
+                results.append(
+                    TradeResult(
+                        e["msg_id"], e["time_utc"], sym, broker, side, order_type,
+                        entry, sl, tp, 0, 0, "NO_DATA", 0, 0, f"no {tf_name}", cid, root,
+                    )
+                )
+                continue
+            p0 = primary["time"].iloc[0].to_pydatetime()
+            if open_t < p0 - timedelta(minutes=30):
+                results.append(
+                    TradeResult(
+                        e["msg_id"], e["time_utc"], sym, broker, side, order_type,
+                        entry, sl, tp, 0, 0, "NO_DATA", 0, 0,
+                        f"no {tf_name} before {p0.date()}", cid, root,
+                    )
+                )
+                continue
 
             if df is None or len(df) == 0:
                 results.append(
@@ -582,7 +970,7 @@ def run_backtest() -> dict:
     lines = [
         f"# Анализ сделок (бэктест {tf_name} + сопровождение)",
         "",
-        f"- Таймфрейм: **{tf_name}** (ранние сделки без M1 — fallback H1)",
+        f"- Таймфрейм: **{tf_name}**",
         f"- Сделок: **{len(df)}** | Цепочек: **{len(chains)}**",
         f"- TP: **{tp_n}** | SL: **{sl_n}** | MANUAL: **{man_n}** | CANCELLED: **{can_n}**",
         f"- Winrate (TP/(TP+SL)): **{wr}%**",

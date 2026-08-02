@@ -21,8 +21,13 @@ header p{margin:0;color:var(--muted);line-height:1.45}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 8px 24px rgba(26,31,28,.04)}
 .card h2{margin:0 0 12px;font-size:1.05rem}
 label{display:block;font-size:.78rem;color:var(--muted);margin:10px 0 4px}
-input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fcfbf8}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fcfbf8}
+textarea{min-height:52px;resize:vertical;line-height:1.35}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row-1{display:grid;grid-template-columns:1fr;gap:10px}
+.fgroup{margin-top:16px;padding:12px 12px 4px;border:1px solid var(--line);border-radius:12px;background:#fcfbf8}
+.fgroup h3{margin:0 0 4px;font-size:.95rem}
+.fgroup .ghint{margin:0 0 8px;font-size:.8rem;color:var(--muted);line-height:1.4}
 .btn{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:999px;padding:12px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
 .btn-go{background:var(--go);color:#fff}.btn-go:hover{background:var(--go2)}
 .btn-sec{background:#fff;border:1px solid var(--line);color:var(--ink)}
@@ -98,7 +103,7 @@ table.res tr:nth-child(even){background:#faf8f3}
       <h2>Настройки</h2>
       <form id="cfg" onsubmit="return saveCfg(event)">
         <label>Telegram-канал (без https://t.me/)</label>
-        <input name="channel" id="channel" placeholder="your_channel_name" required/>
+        <input name="channel" id="channel" placeholder="tradingplusforex" required/>
 
         <div class="row">
           <div>
@@ -139,61 +144,182 @@ table.res tr:nth-child(even){background:#faf8f3}
           <option value="compact">compact — #EURUSD Buy … SL … TP</option>
         </select>
 
-        <div class="row">
-          <div>
-            <label>Обязательные слова (через |)</label>
-            <input name="must_contain" id="must_contain"/>
+        <div class="fgroup">
+          <h3>1. Какие посты брать в работу</h3>
+          <p class="ghint">Фильтры до разбора. Несколько вариантов разделяйте знаком |</p>
+          <div class="row">
+            <div>
+              <label>Пост должен содержать (все через |)</label>
+              <input name="must_contain" id="must_contain" placeholder="Стоп лосс"/>
+            </div>
+            <div>
+              <label>Пропускать пост, если есть (через |)</label>
+              <input name="skip_if_contains" id="skip_if_contains" placeholder="реклама|итоги дня"/>
+            </div>
           </div>
-          <div>
-            <label>Пропускать, если есть (через |)</label>
-            <input name="skip_if_contains" id="skip_if_contains"/>
+          <div class="row">
+            <div>
+              <label>Символ из #хештега (#EURUSD)</label>
+              <select name="symbol_from_hashtag" id="symbol_from_hashtag">
+                <option value="yes">да</option>
+                <option value="no">нет</option>
+              </select>
+            </div>
+            <div>
+              <label>Слова «это лимитный ордер» (через |)</label>
+              <input name="limit_words" id="limit_words" placeholder="лимит|limit"/>
+            </div>
           </div>
         </div>
 
-        <div class="row">
-          <div><label>Подпись стороны</label><input name="label_side" id="label_side"/></div>
-          <div><label>Подпись входа</label><input name="label_entry" id="label_entry"/></div>
-        </div>
-        <div class="row">
-          <div><label>Подпись стопа</label><input name="label_sl" id="label_sl"/></div>
-          <div><label>Подпись тейка</label><input name="label_tp" id="label_tp"/></div>
-        </div>
-        <div class="row">
-          <div><label>Слова BUY (через |)</label><input name="buy_words" id="buy_words"/></div>
-          <div><label>Слова SELL (через |)</label><input name="sell_words" id="sell_words"/></div>
-        </div>
-        <div class="row">
-          <div><label>Слова «открытый TP»</label><input name="tp_open_words" id="tp_open_words"/></div>
-          <div><label>RR если TP открытый</label><input name="open_tp_rr" id="open_tp_rr" type="number" step="0.1"/></div>
+        <div class="fgroup">
+          <h3>2. Подписи полей в тексте сигнала</h3>
+          <p class="ghint">Как автор канала подписывает строки: «Тип сделки:», «Стоп лосс:» и т.п.</p>
+          <div class="row">
+            <div><label>Подпись стороны сделки</label><input name="label_side" id="label_side" placeholder="Тип сделки"/></div>
+            <div><label>Подпись цены входа</label><input name="label_entry" id="label_entry" placeholder="Цена открытия"/></div>
+          </div>
+          <div class="row">
+            <div><label>Подпись стоп-лосса</label><input name="label_sl" id="label_sl" placeholder="Стоп лосс"/></div>
+            <div><label>Подпись тейк-профита</label><input name="label_tp" id="label_tp" placeholder="Тейк профит"/></div>
+          </div>
         </div>
 
-        <h3 style="margin:18px 0 8px;font-size:1rem">Сопровождение сделок</h3>
-        <p class="hint" style="margin-top:0">Цепочки постов: новый сигнал → корректировка цены/стопа → отмена лимита → разворот. Влияет на историю и Live.</p>
-        <div class="row">
-          <div>
-            <label>Сопровождение</label>
-            <select name="manage_enabled" id="manage_enabled" onchange="toggleManageFields()">
-              <option value="no">выкл</option>
-              <option value="yes">вкл</option>
-            </select>
+        <div class="fgroup">
+          <h3>3. Слова направления и открытого TP</h3>
+          <p class="ghint">По ним парсер понимает Buy/Sell и что TP «открытый» (цель считается по RR).</p>
+          <div class="row">
+            <div><label>Слова покупки / лонга (через |)</label><input name="buy_words" id="buy_words" placeholder="покуп|лонг|buy"/></div>
+            <div><label>Слова продажи / шорта (через |)</label><input name="sell_words" id="sell_words" placeholder="продаж|шорт|sell"/></div>
           </div>
-          <div>
-            <label>Связывать посты, часов</label>
-            <input name="manage_link_max_hours" id="manage_link_max_hours" type="number" min="1" value="96"/>
+          <div class="row">
+            <div><label>Слова «TP открытый» (через |)</label><input name="tp_open_words" id="tp_open_words" placeholder="открыт"/></div>
+            <div><label>RR, если TP открытый</label><input name="open_tp_rr" id="open_tp_rr" type="number" step="0.1" placeholder="2.0"/></div>
           </div>
         </div>
+
+        <div class="fgroup">
+          <h3>4. Сопровождение — связь постов в цепочку</h3>
+          <p class="ghint">Новый сигнал → правки → закрытие. Влияет на историю и Live.</p>
+          <div class="row">
+            <div>
+              <label>Сопровождение сделок</label>
+              <select name="manage_enabled" id="manage_enabled" onchange="toggleManageFields()">
+                <option value="no">выкл</option>
+                <option value="yes">вкл</option>
+              </select>
+            </div>
+            <div>
+              <label>Неформальные посты = сопровождение</label>
+              <select name="manage_informal_as_manage" id="manage_informal_as_manage">
+                <option value="yes">да</option>
+                <option value="no">нет</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Связывать посты одного символа, часов</label>
+              <input name="manage_link_max_hours" id="manage_link_max_hours" type="number" min="1" value="720"/>
+            </div>
+            <div>
+              <label>Макс. разрыв ID сообщений в цепочке</label>
+              <input name="manage_link_max_id_gap" id="manage_link_max_id_gap" type="number" min="1" value="300"/>
+            </div>
+          </div>
+        </div>
+
         <div id="manageFields">
-          <div class="row">
-            <div><label>Слова: отмена лимита</label><input name="manage_words_cancel_pending" id="manage_words_cancel_pending"/></div>
-            <div><label>Слова: разворот</label><input name="manage_words_reverse" id="manage_words_reverse"/></div>
+          <div class="fgroup">
+            <h3>5. Закрытие позиции и фиксация прибыли</h3>
+            <p class="ghint">«Фиксируем прибыль», «закрываем сделку» → закрытие по рынку в анализе.</p>
+            <div class="row-1">
+              <div>
+                <label>Слова полного закрытия / фиксации (через |)</label>
+                <textarea name="manage_words_close" id="manage_words_close" rows="2"></textarea>
+              </div>
+            </div>
           </div>
-          <div class="row">
-            <div><label>Слова: смена стопа</label><input name="manage_words_modify_sl" id="manage_words_modify_sl"/></div>
-            <div><label>Слова: по рынку</label><input name="manage_words_to_market" id="manage_words_to_market"/></div>
+
+          <div class="fgroup">
+            <h3>6. Стоп, тейк и уровни ордера</h3>
+            <p class="ghint">Перенос стопа, смена TP, смена цены лимита, безубыток.</p>
+            <div class="row-1">
+              <div>
+                <label>Слова безубытка / стоп на вход (через |)</label>
+                <textarea name="manage_words_breakeven" id="manage_words_breakeven" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова смены стоп-лосса (через |)</label>
+                <textarea name="manage_words_modify_sl" id="manage_words_modify_sl" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова смены тейк-профита (через |)</label>
+                <textarea name="manage_words_modify_tp" id="manage_words_modify_tp" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова смены цены / перестановки лимита (через |)</label>
+                <textarea name="manage_words_modify_levels" id="manage_words_modify_levels" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова «SL/TP не меняем, взять из сделки» (через |)</label>
+                <textarea name="manage_words_inherit_levels" id="manage_words_inherit_levels" rows="2"></textarea>
+              </div>
+            </div>
           </div>
-          <div class="row">
-            <div><label>Слова: закрытие</label><input name="manage_words_close" id="manage_words_close"/></div>
-            <div><label>Слова: безубыток</label><input name="manage_words_breakeven" id="manage_words_breakeven"/></div>
+
+          <div class="fgroup">
+            <h3>7. Лимитные ордера и рынок</h3>
+            <p class="ghint">Снятие неактуального лимита, переход в рынок, ордер без даты истечения.</p>
+            <div class="row-1">
+              <div>
+                <label>Слова снятия / отмены лимита (через |)</label>
+                <textarea name="manage_words_cancel_pending" id="manage_words_cancel_pending" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова входа по рынку вместо лимита (через |)</label>
+                <textarea name="manage_words_to_market" id="manage_words_to_market" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова «лимит не снимать» (через |)</label>
+                <textarea name="manage_words_keep_pending" id="manage_words_keep_pending" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова «убрать дату истечения / ордер до отмены» (через |)</label>
+                <textarea name="manage_words_clear_expiry" id="manage_words_clear_expiry" rows="2"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="fgroup">
+            <h3>8. Разворот и добор</h3>
+            <p class="ghint">Закрыть и открыть в другую сторону; добавить ещё один ордер.</p>
+            <div class="row-1">
+              <div>
+                <label>Слова разворота позиции (через |)</label>
+                <textarea name="manage_words_reverse" id="manage_words_reverse" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="row-1">
+              <div>
+                <label>Слова добора / усреднения (через |)</label>
+                <textarea name="manage_words_add" id="manage_words_add" rows="2"></textarea>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -215,7 +341,7 @@ table.res tr:nth-child(even){background:#faf8f3}
             <button class="btn btn-go" type="button" id="btnParse">1. Скачать сигналы</button>
             <button class="btn btn-warn" type="button" id="btnBacktest">2. Анализ сделок</button>
           </div>
-          <p class="hint">Перед шагом 2 откройте MetaTrader 5 и войдите в счёт.</p>
+          <p class="hint">Перед шагом 2 откройте MT5. Для годового M1: Сервис → Настройки → Графики → макс. баров = Unlimited, затем полностью перезапустите MT5.</p>
         </li>
         <li>
           <strong>Live в реальном времени</strong><br/>

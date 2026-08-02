@@ -16,6 +16,7 @@ import time
 import traceback
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -186,6 +187,15 @@ def _signals_summary() -> dict:
     }
 
 
+def _sum_pnl_r(rows: list[dict]) -> float:
+    """Сумма R по сделкам с результатом: TP, SL и закрытие по посту (MANUAL)."""
+    traded = [r for r in rows if (r.get("outcome") or "") in ("TP", "SL", "MANUAL")]
+    try:
+        return round(sum(float(r.get("pnl_R") or 0) for r in traded), 2)
+    except Exception:
+        return 0.0
+
+
 def _backtest_summary() -> dict:
     import csv
 
@@ -220,11 +230,7 @@ def _backtest_summary() -> dict:
     manual = sum(1 for r in rows if r["outcome"] == "MANUAL")
     cancelled = sum(1 for r in rows if r["outcome"] == "CANCELLED")
     wr = round(tp / (tp + sl) * 100, 1) if tp + sl else 0.0
-    traded = [r for r in rows if r["outcome"] in ("TP", "SL", "MANUAL")]
-    try:
-        sum_r = round(sum(float(r["pnl_R"] or 0) for r in traded), 2)
-    except Exception:
-        sum_r = 0.0
+    sum_r = _sum_pnl_r(rows)
     return {
         "ok": True,
         "count": len(rows),
@@ -239,7 +245,7 @@ def _backtest_summary() -> dict:
         "md_text": md_text,
         "rows": rows[:120],
         "message": (
-            f"Анализ M1 (ранние без минутной истории — H1): {len(rows)} сделок → "
+            f"Анализ M1: {len(rows)} сделок → "
             f"TP {tp} / SL {sl} / закрыто по посту {manual} / лимит снят {cancelled}, "
             f"винрейт {wr}%, сумма {sum_r}R."
         ),
@@ -293,6 +299,11 @@ a{color:var(--go)}
 .scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:12px}
 .nav{margin-bottom:14px}
 .nav a{margin-right:12px;text-decoration:none;font-weight:600}
+.nav a.btn-dl,.actions-row a.btn-dl{
+  display:inline-block;padding:8px 14px;border-radius:10px;
+  background:var(--ink);color:#fff !important;border:1px solid var(--ink);
+}
+.actions-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px}
 .raw{max-width:280px;white-space:normal;font-size:.78rem;color:var(--muted)}
 """
 
@@ -306,6 +317,30 @@ def _view_shell(title: str, body: str) -> bytes:
 <style>{_VIEW_CSS}</style>
 </head><body><div class="wrap">{body}</div></body></html>"""
     return html_doc.encode("utf-8")
+
+
+def _meta_banner_html() -> str:
+    cp = cfg.load_settings()
+    channel = html.escape(cfg.get(cp, "telegram", "channel", "") or "—")
+    days = html.escape(cfg.get(cp, "period", "days_back", "") or "—")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return (
+        f"<div class='metrics'>"
+        f"<span class='metric'>Канал: <b>{channel}</b></span>"
+        f"<span class='metric'>Период days_back: <b>{days}</b></span>"
+        f"<span class='metric'>Сформировано: <b>{html.escape(now)}</b></span>"
+        f"</div>"
+    )
+
+
+def _send_download(handler: BaseHTTPRequestHandler, filename: str, body: bytes, ctype: str) -> None:
+    handler.send_response(200)
+    handler.send_header("Content-Type", ctype)
+    handler.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
 
 def _fmt_num(v: str | float | int, digits: int = 5) -> str:
@@ -359,6 +394,8 @@ def _render_signals_page() -> bytes:
             "cancel_pending": "снятие лимита",
             "reverse": "разворот",
             "close": "закрытие",
+            "modify_tp": "смена TP",
+            "clear_expiry": "ордер до отмены",
             "add": "добор",
         }.get(action, action)
         role_ru = {"signal": "сигнал", "manage": "сопровождение"}.get(role, role)
@@ -419,6 +456,10 @@ def _render_signals_page() -> bytes:
         "<div class='nav'><a href='/'>← Панель</a><a href='/report'>Анализ сделок →</a></div>"
         "<h1>Сигналы канала</h1>"
         "<p class='sub'>Разобранные торговые идеи из Telegram. Это ещё не прибыль — только список сделок.</p>"
+        f"{_meta_banner_html()}"
+        "<div class='actions-row'>"
+        "<a class='btn-dl' href='/download/signals'>⬇ Скачать отчёт</a>"
+        "</div>"
         f"<div class='card'>{metrics}{ok_table}"
         "<p class='hint'>Источник: output/signals_latest.csv</p></div>"
         f"{fail_block}"
@@ -442,12 +483,9 @@ def _render_report_page() -> bytes:
 
     tp = sum(1 for r in rows if r.get("outcome") == "TP")
     sl = sum(1 for r in rows if r.get("outcome") == "SL")
-    other = len(rows) - tp - sl
-    traded = [r for r in rows if r.get("outcome") in ("TP", "SL")]
-    try:
-        sum_r = round(sum(float(r.get("pnl_R") or 0) for r in traded), 2)
-    except Exception:
-        sum_r = 0.0
+    manual = sum(1 for r in rows if r.get("outcome") == "MANUAL")
+    other = len(rows) - tp - sl - manual
+    sum_r = _sum_pnl_r(rows)
     wr = round(tp / (tp + sl) * 100, 1) if tp + sl else 0.0
     sum_cls = "good" if sum_r >= 0 else "bad"
 
@@ -458,6 +496,7 @@ def _render_report_page() -> bytes:
         f"<span class='metric bad'>SL: <b>{sl}</b></span>"
         f"<span class='metric'>Winrate: <b>{wr}%</b></span>"
         f"<span class='metric {sum_cls}'>Сумма R: <b>{sum_r:+.2f}</b></span>"
+        + (f"<span class='metric warn'>MANUAL: <b>{manual}</b></span>" if manual else "")
         + (f"<span class='metric warn'>Прочее: <b>{other}</b></span>" if other else "")
         + "</div>"
     )
@@ -515,6 +554,10 @@ def _render_report_page() -> bytes:
         "<div class='nav'><a href='/'>← Панель</a><a href='/signals'>← Сигналы</a></div>"
         "<h1>Анализ сделок</h1>"
         "<p class='sub'>Бэктест по истории MT5 (M1). Зелёный = TP (прибыль), красный = SL (убыток).</p>"
+        f"{_meta_banner_html()}"
+        "<div class='actions-row'>"
+        "<a class='btn-dl' href='/download/report'>⬇ Скачать отчёт</a>"
+        "</div>"
         f"<div class='card'>{metrics}{table}"
         "<p class='hint'>Источник: output/backtest/backtest_latest.csv · "
         "После правки парсера перезапустите шаг 2, чтобы обновить анализ.</p></div>"
@@ -592,6 +635,8 @@ class Handler(BaseHTTPRequestHandler):
                     "format": cfg.get(cp, "parse", "format", "labels"),
                     "must_contain": cfg.get(cp, "parse", "must_contain"),
                     "skip_if_contains": cfg.get(cp, "parse", "skip_if_contains"),
+                    "symbol_from_hashtag": cfg.get(cp, "parse", "symbol_from_hashtag", "yes"),
+                    "limit_words": cfg.get(cp, "parse", "limit_words", "лимит|limit"),
                     "label_side": cfg.get(cp, "parse", "label_side"),
                     "label_entry": cfg.get(cp, "parse", "label_entry"),
                     "label_sl": cfg.get(cp, "parse", "label_sl"),
@@ -601,13 +646,21 @@ class Handler(BaseHTTPRequestHandler):
                     "tp_open_words": cfg.get(cp, "parse", "tp_open_words"),
                     "open_tp_rr": cfg.get(cp, "parse", "open_tp_rr", "2.0"),
                     "manage_enabled": cfg.get(cp, "manage", "enabled", "no"),
-                    "manage_link_max_hours": cfg.get(cp, "manage", "link_max_hours", "96"),
+                    "manage_informal_as_manage": cfg.get(cp, "manage", "informal_as_manage", "yes"),
+                    "manage_link_max_hours": cfg.get(cp, "manage", "link_max_hours", "720"),
+                    "manage_link_max_id_gap": cfg.get(cp, "manage", "link_max_id_gap", "300"),
                     "manage_words_cancel_pending": cfg.get(cp, "manage", "words_cancel_pending"),
                     "manage_words_reverse": cfg.get(cp, "manage", "words_reverse"),
                     "manage_words_modify_sl": cfg.get(cp, "manage", "words_modify_sl"),
+                    "manage_words_modify_tp": cfg.get(cp, "manage", "words_modify_tp"),
+                    "manage_words_modify_levels": cfg.get(cp, "manage", "words_modify_levels"),
+                    "manage_words_inherit_levels": cfg.get(cp, "manage", "words_inherit_levels"),
                     "manage_words_to_market": cfg.get(cp, "manage", "words_to_market"),
+                    "manage_words_keep_pending": cfg.get(cp, "manage", "words_keep_pending"),
+                    "manage_words_clear_expiry": cfg.get(cp, "manage", "words_clear_expiry"),
                     "manage_words_close": cfg.get(cp, "manage", "words_close"),
                     "manage_words_breakeven": cfg.get(cp, "manage", "words_breakeven"),
+                    "manage_words_add": cfg.get(cp, "manage", "words_add"),
                 }
             )
             return
@@ -624,6 +677,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/signals":
             self._send(200, _render_signals_page())
+            return
+        if path == "/download/signals":
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            # тот же HTML, что на странице /signals (таблицы + метрики)
+            _send_download(
+                self,
+                f"signalkit_signals_{stamp}.html",
+                _render_signals_page(),
+                "text/html; charset=utf-8",
+            )
+            return
+        if path == "/download/report":
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            _send_download(
+                self,
+                f"signalkit_backtest_{stamp}.html",
+                _render_report_page(),
+                "text/html; charset=utf-8",
+            )
             return
         self._send(404, _html_page("Not found"))
 
@@ -652,6 +724,8 @@ class Handler(BaseHTTPRequestHandler):
                     ("parse", "format"): "format",
                     ("parse", "must_contain"): "must_contain",
                     ("parse", "skip_if_contains"): "skip_if_contains",
+                    ("parse", "symbol_from_hashtag"): "symbol_from_hashtag",
+                    ("parse", "limit_words"): "limit_words",
                     ("parse", "label_side"): "label_side",
                     ("parse", "label_entry"): "label_entry",
                     ("parse", "label_sl"): "label_sl",
@@ -661,13 +735,21 @@ class Handler(BaseHTTPRequestHandler):
                     ("parse", "tp_open_words"): "tp_open_words",
                     ("parse", "open_tp_rr"): "open_tp_rr",
                     ("manage", "enabled"): "manage_enabled",
+                    ("manage", "informal_as_manage"): "manage_informal_as_manage",
                     ("manage", "link_max_hours"): "manage_link_max_hours",
+                    ("manage", "link_max_id_gap"): "manage_link_max_id_gap",
                     ("manage", "words_cancel_pending"): "manage_words_cancel_pending",
                     ("manage", "words_reverse"): "manage_words_reverse",
                     ("manage", "words_modify_sl"): "manage_words_modify_sl",
+                    ("manage", "words_modify_tp"): "manage_words_modify_tp",
+                    ("manage", "words_modify_levels"): "manage_words_modify_levels",
+                    ("manage", "words_inherit_levels"): "manage_words_inherit_levels",
                     ("manage", "words_to_market"): "manage_words_to_market",
+                    ("manage", "words_keep_pending"): "manage_words_keep_pending",
+                    ("manage", "words_clear_expiry"): "manage_words_clear_expiry",
                     ("manage", "words_close"): "manage_words_close",
                     ("manage", "words_breakeven"): "manage_words_breakeven",
+                    ("manage", "words_add"): "manage_words_add",
                 }
                 for (sec, key), form_key in mapping.items():
                     if form_key in data:
@@ -755,7 +837,7 @@ def main() -> None:
     cp = cfg.load_settings()
     if not cfg.get(cp, "parse", "format"):
         try:
-            preset = cfg.get(cp, "parse", "preset", "custom") or "custom"
+            preset = cfg.get(cp, "parse", "preset", "tradingplus") or "tradingplus"
             cfg.apply_preset(cp, preset)
             cfg.save_settings(cp)
         except Exception:
