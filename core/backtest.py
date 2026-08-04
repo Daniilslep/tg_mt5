@@ -726,7 +726,15 @@ def load_timeline_rows() -> list[dict]:
 
 def run_backtest() -> dict:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     print("Анализ: импорт MetaTrader5…", flush=True)
     import MetaTrader5 as mt5

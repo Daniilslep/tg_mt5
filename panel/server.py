@@ -59,6 +59,9 @@ def _run_job_worker(job_id: str, name: str, args: list[str]) -> None:
             "M1 за год может идти долго — в журнале будет пульс «ещё работает».",
         )
         t0 = time.time()
+        env = dict(**__import__("os").environ)
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
             [sys.executable, "-u", *args],
             cwd=str(ROOT),
@@ -68,6 +71,7 @@ def _run_job_worker(job_id: str, name: str, args: list[str]) -> None:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=env,
         )
         assert proc.stdout is not None
         import queue

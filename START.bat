@@ -21,6 +21,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+REM UTF-8: иначе на en-US Windows (cp1252) кириллица в логах падает
+chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
 python --version
 echo.
 
