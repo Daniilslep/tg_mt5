@@ -35,9 +35,10 @@ if not exist "НАСТРОЙКИ.ini" (
 )
 
 echo  Checking packages...
-python -c "import telethon,MetaTrader5,pandas" 1>nul 2>nul
+python -c "import telethon,MetaTrader5,pandas,hcc_reader" 1>nul 2>nul
 if errorlevel 1 (
   echo  Installing packages, please wait...
+  echo  (Git not required — hcc-reader is bundled in vendor\)
   python -m pip install -r requirements.txt
   if errorlevel 1 (
     echo  [ERROR] pip install failed
