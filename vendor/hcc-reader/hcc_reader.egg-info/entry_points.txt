@@ -1,2 +1,0 @@
-[console_scripts]
-hcc-reader = hcc_reader.cli:main
