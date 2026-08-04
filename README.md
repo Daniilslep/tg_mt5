@@ -93,7 +93,8 @@ SignalKit/
 3. Скомпилировать `TG_Signal_Live_EA.mq5`, повесить на график
 4. Сначала **`InpDryRun = true`**, потом демо, потом реал
 
-Правила подхватываются из `Common\Files\SignalKit\parse_rules.txt`.
+Правила подхватываются из `Common\Files\SignalKit\parse_rules.txt`.  
+**Все параметры EA с пояснениями:** [LIVE_EA.md](LIVE_EA.md)
 
 ---
 

@@ -154,9 +154,10 @@ enabled=yes
    - ☑ Разрешить WebRequest для: `https://t.me`
 3. MetaEditor → открыть `TG_Signal_Live_EA.mq5` → Compile (F7)
 4. Navigator → Experts → Refresh → перетащить на график
-5. Параметры:
+5. Параметры советника — полный список: **[LIVE_EA.md](LIVE_EA.md)**  
+   Минимум для старта:
    - `InpDryRun = true` (сначала только лог!)
-   - канал подтянется из `parse_rules.txt`
+   - `InpLoadRulesFile = true` (канал и правила из `parse_rules.txt`)
 6. Включить AutoTrading
 7. Journal: `Bootstrap OK` → ждёт новые посты
 8. Когда всё проверено: `InpDryRun = false` (лучше на демо)
