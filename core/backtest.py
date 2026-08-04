@@ -296,11 +296,7 @@ def _prefetch_hcc_for_symbols(mt5, brokers: list[str], start_utc: datetime, end_
             # актуальный год — обновляем кэш, если исходник доступен
             if _try_copy_hcc(src, dst):
                 continue
-            if dst.exists() and dst.stat().st_size > 1000:
-                # старый кэш лучше, чем ничего; для текущего года пометим на snapshot
-                if y >= datetime.now(timezone.utc).year:
-                    locked_jobs.append((src, dst))
-                continue
+            # файл есть, но заблокирован MT5 — нужен snapshot (в т.ч. прошлые годы)
             locked_jobs.append((src, dst))
 
     if locked_jobs:
@@ -782,6 +778,8 @@ def run_backtest() -> dict:
     results: list[TradeResult] = []
     cache: dict[str, str | None] = {}
     rates_cache: dict[str, object] = {}
+    # полнота истории по брокеру-символу
+    history_cov: dict[str, dict] = {}
     n_chains = 0
 
     # заранее резолвим символы и копируем .hcc (один перезапуск MT5 при блокировке)
@@ -822,16 +820,45 @@ def run_backtest() -> dict:
             print(f"  загрузка {tf_name} {broker} …", flush=True)
             m1df = _load_rates(mt5, broker, earliest[sym], tf_const, tf_name)
             rates_cache[broker] = {"primary": m1df}
+            need = earliest[sym]
             if m1df is not None and len(m1df):
-                tmin = m1df["time"].iloc[0]
-                tmax = m1df["time"].iloc[-1]
+                tmin = m1df["time"].iloc[0].to_pydatetime()
+                tmax = m1df["time"].iloc[-1].to_pydatetime()
+                gap_days = max(0, (tmin - need).total_seconds() / 86400.0)
+                complete = gap_days <= 2.0
+                cov_pct = 100.0
+                if not complete:
+                    span_need = max(1.0, (datetime.now(timezone.utc).replace(tzinfo=None) - need).total_seconds() / 86400.0)
+                    covered_from_need = max(0.0, (tmax - max(tmin, need)).total_seconds() / 86400.0)
+                    cov_pct = round(min(100.0, 100.0 * covered_from_need / span_need), 1)
+                history_cov[broker] = {
+                    "symbol": broker,
+                    "needed_from": need.strftime("%Y-%m-%d"),
+                    "actual_from": tmin.strftime("%Y-%m-%d"),
+                    "actual_to": tmax.strftime("%Y-%m-%d"),
+                    "bars": int(len(m1df)),
+                    "gap_days": round(gap_days, 1),
+                    "coverage_pct": cov_pct if not complete else 100.0,
+                    "complete": complete,
+                }
                 print(f"    bars={len(m1df)}  {tmin} … {tmax}", flush=True)
-                if tmin.to_pydatetime() > earliest[sym] + timedelta(days=2):
+                if not complete:
                     print(
-                        f"    ! {tf_name} только с {tmin.date()} (нужно с {earliest[sym].date()})",
+                        f"    ! {tf_name} только с {tmin.date()} (нужно с {need.date()}) "
+                        f"— покрытие ~{history_cov[broker]['coverage_pct']}%",
                         flush=True,
                     )
             else:
+                history_cov[broker] = {
+                    "symbol": broker,
+                    "needed_from": need.strftime("%Y-%m-%d"),
+                    "actual_from": None,
+                    "actual_to": None,
+                    "bars": 0,
+                    "gap_days": None,
+                    "coverage_pct": 0.0,
+                    "complete": False,
+                }
                 print(f"    {tf_name} пусто для {broker}", flush=True)
 
         pack = rates_cache[broker]
@@ -956,7 +983,7 @@ def run_backtest() -> dict:
             )
 
         if n_chains % 20 == 0:
-            print(f"  ... chains {n_chains}/{len(chains)}")
+            print(f"  ... chains {n_chains}/{len(chains)}", flush=True)
 
     mt5.shutdown()
 
@@ -972,6 +999,7 @@ def run_backtest() -> dict:
             w.writerow(asdict(row))
     latest.write_text((out_dir / f"backtest_{stamp}.csv").read_text(encoding="utf-8-sig"), encoding="utf-8-sig")
 
+    import json
     import pandas as pd
 
     df = pd.DataFrame([asdict(r) for r in results])
@@ -980,23 +1008,105 @@ def run_backtest() -> dict:
     man_n = int((df["outcome"] == "MANUAL").sum()) if len(df) else 0
     can_n = int((df["outcome"] == "CANCELLED").sum()) if len(df) else 0
     nodata = int((df["outcome"] == "NO_DATA").sum()) if len(df) else 0
+    nosym = int((df["outcome"] == "NO_SYMBOL").sum()) if len(df) else 0
+    n_total = int(len(df))
     traded = df[df["outcome"].isin(["TP", "SL", "MANUAL"])] if len(df) else df
     sum_r = float(traded["pnl_R"].sum()) if len(traded) else 0.0
     avg_r = float(traded["pnl_R"].mean()) if len(traded) else 0.0
     wr = round(tp_n / (tp_n + sl_n) * 100, 1) if tp_n + sl_n else 0.0
 
+    # --- качество / полнота истории ---
+    simulatable = max(0, n_total - nodata - nosym)
+    trade_coverage_pct = round(100.0 * simulatable / n_total, 1) if n_total else 0.0
+    cov_list = list(history_cov.values())
+    incomplete_syms = [c for c in cov_list if not c.get("complete")]
+    if cov_list:
+        # среднее покрытие символов, взвешенное числом сделок по символу
+        weights = []
+        for c in cov_list:
+            w = int((df["broker_symbol"] == c["symbol"]).sum()) if len(df) else 1
+            weights.append(max(1, w))
+        hist_avg = round(
+            sum(float(c["coverage_pct"]) * w for c, w in zip(cov_list, weights)) / sum(weights),
+            1,
+        )
+    else:
+        hist_avg = 0.0
+    # итоговый балл: нельзя получить высокий score при куче NO_DATA
+    quality_score = round(0.55 * trade_coverage_pct + 0.45 * hist_avg, 1)
+    if quality_score >= 95 and nodata == 0 and not incomplete_syms:
+        quality_status = "FULL"
+        quality_label = "ПОЛНАЯ"
+    elif quality_score >= 70:
+        quality_status = "PARTIAL"
+        quality_label = "ЧАСТИЧНАЯ"
+    else:
+        quality_status = "POOR"
+        quality_label = "СЛАБАЯ"
+
+    quality = {
+        "quality_score": quality_score,
+        "quality_status": quality_status,
+        "quality_label": quality_label,
+        "trade_coverage_pct": trade_coverage_pct,
+        "history_avg_pct": hist_avg,
+        "n_total": n_total,
+        "n_simulated": simulatable,
+        "n_no_data": nodata,
+        "n_no_symbol": nosym,
+        "symbols_total": len(cov_list),
+        "symbols_incomplete": len(incomplete_syms),
+        "timeframe": tf_name,
+        "sum_R_on_simulated": round(sum_r, 2),
+        "reliable": quality_status == "FULL",
+        "symbols": sorted(cov_list, key=lambda x: float(x.get("coverage_pct") or 0)),
+        "hint": (
+            "История MT5 полная — цифры TP/SL/R можно сравнивать между прогонами."
+            if quality_status == "FULL"
+            else (
+                "История НЕ полная: часть сделок без баров (NO_DATA) или обрезана дата начала. "
+                "Сумма R только по просчитанным сделкам — на другом ПК с полной историей итог будет другим. "
+                "Откройте графики проблемных символов в MT5, прокрутите историю назад, "
+                "MaxBars=Unlimited, перезапустите MT5 и повторите анализ."
+            )
+        ),
+    }
+    (out_dir / "history_quality.json").write_text(
+        json.dumps(quality, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     lines = [
         f"# Анализ сделок (бэктест {tf_name} + сопровождение)",
         "",
+        f"## Полнота истории: **{quality_score}%** — {quality_label}",
+        "",
+        f"- Статус: **{quality_status}** ({'можно доверять цифрам' if quality['reliable'] else 'цифры НЕ полные — не сравнивайте с другим ПК'})",
+        f"- Покрытие сделок (есть история): **{trade_coverage_pct}%** ({simulatable}/{n_total})",
+        f"- Среднее покрытие символов по датам: **{hist_avg}%**",
+        f"- Без истории NO_DATA: **{nodata}** | Нет символа: **{nosym}** | Символов с дырами: **{len(incomplete_syms)}/{len(cov_list)}**",
+        f"- {quality['hint']}",
+        "",
         f"- Таймфрейм: **{tf_name}**",
-        f"- Сделок: **{len(df)}** | Цепочек: **{len(chains)}**",
+        f"- Сделок: **{n_total}** | Цепочек: **{len(chains)}**",
         f"- TP: **{tp_n}** | SL: **{sl_n}** | MANUAL: **{man_n}** | CANCELLED: **{can_n}**",
         f"- Winrate (TP/(TP+SL)): **{wr}%**",
-        f"- Сумма: **{sum_r:.1f}R** | Средняя: **{avg_r:.2f}R**",
-        f"- NO_SYMBOL: **{int((df['outcome']=='NO_SYMBOL').sum()) if len(df) else 0}**",
-        f"- NO_DATA: **{nodata}**",
+        f"- Сумма (только просчитанные): **{sum_r:.1f}R** | Средняя: **{avg_r:.2f}R**",
         "",
-        "## По символам",
+        "## История по символам",
+        "",
+        "| Symbol | Нужно с | Факт с | Баров | Покрытие % | ОК",
+        "|---|---|---|---:|---:|---|",
+    ]
+    for c in sorted(cov_list, key=lambda x: x["symbol"]):
+        ok = "OK" if c.get("complete") else "ДЫРА"
+        lines.append(
+            f"| {c['symbol']} | {c.get('needed_from')} | {c.get('actual_from') or '—'} | "
+            f"{c.get('bars', 0)} | {c.get('coverage_pct', 0)} | {ok} |"
+        )
+    lines += [
+        "",
+        "## По символам (результаты)",
         "",
         "| Symbol | N | TP | SL | WR% | Sum R |",
         "|---|---:|---:|---:|---:|---:|",
@@ -1013,8 +1123,16 @@ def run_backtest() -> dict:
     (out_dir / "backtest_latest.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(
         f"Готово [{tf_name}]: TP={tp_n} SL={sl_n} MANUAL={man_n} CANCEL={can_n} "
-        f"NO_DATA={nodata} sum={sum_r:.1f}R → {out_dir}"
+        f"NO_DATA={nodata} sum={sum_r:.1f}R → {out_dir}",
+        flush=True,
     )
+    print(
+        f"ПОЛНОТА ИСТОРИИ: {quality_score}% ({quality_label}) | "
+        f"сделок с барами {trade_coverage_pct}% | символов с дырами {len(incomplete_syms)}/{len(cov_list)}",
+        flush=True,
+    )
+    if not quality["reliable"]:
+        print(f"! {quality['hint']}", flush=True)
     return {
         "ok": True,
         "n": len(results),
@@ -1022,8 +1140,13 @@ def run_backtest() -> dict:
         "sl": sl_n,
         "manual": man_n,
         "cancelled": can_n,
+        "no_data": nodata,
         "sum_R": round(sum_r, 2),
         "winrate": wr,
         "chains": len(chains),
         "timeframe": tf_name,
+        "quality_score": quality_score,
+        "quality_status": quality_status,
+        "trade_coverage_pct": trade_coverage_pct,
+        "reliable": quality["reliable"],
     }

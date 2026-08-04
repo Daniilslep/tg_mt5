@@ -601,17 +601,39 @@ async function showBacktest(){
     const sumR = Number(j.sum_R);
     const sumColor = sumR > 0 ? '#1f6f4a' : (sumR < 0 ? '#8b2e2e' : '#1a1f1c');
     const sumBg = sumR > 0 ? '#e7f3ec' : (sumR < 0 ? '#fdeeee' : '#fcfbf8');
+    const q = j.quality || {};
+    const qScore = (j.quality_score != null) ? j.quality_score : q.quality_score;
+    const qLabel = j.quality_label || q.quality_label || q.quality_status || '';
+    const reliable = !!(j.reliable || q.reliable);
+    const qBg = reliable ? '#e7f3ec' : ((q.quality_status === 'PARTIAL') ? '#fff7e6' : '#fdeeee');
+    const qBd = reliable ? '#9fd0b4' : ((q.quality_status === 'PARTIAL') ? '#e6c98a' : '#e8b4b4');
+    let qBlock = '';
+    if(qScore != null){
+      qBlock =
+        '<div style="margin-top:10px;padding:12px 14px;border-radius:12px;border:1px solid ' + qBd + ';background:' + qBg + '">' +
+        '<div><b>Полнота истории: ' + qScore + '% — ' + esc(String(qLabel)) + '</b></div>' +
+        '<div class="hint" style="margin-top:6px;color:inherit">' +
+        'Сделок с барами: <b>' + (q.trade_coverage_pct != null ? q.trade_coverage_pct : '—') + '%</b> · ' +
+        'NO_DATA: <b>' + (j.no_data != null ? j.no_data : (q.n_no_data || 0)) + '</b> · ' +
+        'дыры по символам: <b>' + (q.symbols_incomplete || 0) + '/' + (q.symbols_total || 0) + '</b>' +
+        '</div>' +
+        (q.hint ? '<div class="hint" style="margin-top:6px;color:inherit">' + esc(q.hint) + '</div>' : '') +
+        (reliable ? '' : '<div class="hint" style="margin-top:6px;color:#8b2e2e"><b>Сумма R неполная</b> — на другом ПК с полной историей итог будет другим.</div>') +
+        '</div>';
+    }
     sum.innerHTML =
       '<strong>Результат шага 2 — бэктест на истории MT5 (M1)</strong><br/>' +
       esc(j.message) +
+      qBlock +
       '<div style="margin-top:10px">' +
       '<span class="metric">Сигналов: <b>' + j.count + '</b></span>' +
       '<span class="metric" style="background:#e7f3ec;border-color:#9fd0b4;color:#1f6f4a">TP: <b>' + j.tp + '</b></span>' +
       '<span class="metric" style="background:#fdeeee;border-color:#e8b4b4;color:#8b2e2e">SL: <b>' + j.sl + '</b></span>' +
       '<span class="metric">Winrate: <b>' + j.winrate + '%</b></span>' +
       '<span class="metric" style="background:' + sumBg + ';color:' + sumColor + ';border-color:' + (sumR < 0 ? '#e8b4b4' : (sumR > 0 ? '#9fd0b4' : '#d8d3c8')) + '">Сумма: <b>' + j.sum_R + 'R</b></span>' +
+      (j.no_data ? '<span class="metric" style="background:#fdeeee;border-color:#e8b4b4">NO_DATA: <b>' + j.no_data + '</b></span>' : '') +
       '</div>' +
-      '<div class="hint" style="color:#ddd;margin-top:8px">Файлы: SignalKit\\\\output\\\\backtest\\\\backtest_latest.md и .csv</div>';
+      '<div class="hint" style="color:#ddd;margin-top:8px">Файлы: output\\\\backtest\\\\backtest_latest.* и history_quality.json</div>';
 
     let html = '<table class="res" style="margin-top:12px"><thead><tr>' +
       '<th>Дата</th><th>Цепочка</th><th>Символ</th><th>Сторона</th><th>Итог</th><th>PnL R</th><th>Entry</th><th>SL</th><th>TP</th><th>Заметка</th>' +

@@ -242,6 +242,64 @@ def _sum_pnl_r(rows: list[dict]) -> float:
         return 0.0
 
 
+def _load_history_quality() -> dict | None:
+    path = cfg.OUTPUT_DIR / "backtest" / "history_quality.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _quality_banner_html(q: dict | None) -> str:
+    if not q:
+        return (
+            "<div class='card' style='border-color:#e8b4b4;background:#fdeeee'>"
+            "<b>Полнота истории:</b> нет данных. Перезапустите «2. Анализ сделок»."
+            "</div>"
+        )
+    score = q.get("quality_score", 0)
+    label = q.get("quality_label") or q.get("quality_status") or "?"
+    status = q.get("quality_status") or ""
+    reliable = bool(q.get("reliable"))
+    bg = "#e7f3ec" if reliable else ("#fff7e6" if status == "PARTIAL" else "#fdeeee")
+    bd = "#9fd0b4" if reliable else ("#e6c98a" if status == "PARTIAL" else "#e8b4b4")
+    hint = html.escape(str(q.get("hint") or ""))
+    sym_bad = q.get("symbols_incomplete", 0)
+    sym_tot = q.get("symbols_total", 0)
+    rows = ""
+    for s in (q.get("symbols") or [])[:12]:
+        if s.get("complete"):
+            continue
+        rows += (
+            f"<tr><td>{html.escape(str(s.get('symbol')))}</td>"
+            f"<td>{html.escape(str(s.get('needed_from') or '—'))}</td>"
+            f"<td>{html.escape(str(s.get('actual_from') or '—'))}</td>"
+            f"<td>{html.escape(str(s.get('coverage_pct')))}%</td></tr>"
+        )
+    table = ""
+    if rows:
+        table = (
+            "<div class='scroll' style='max-height:180px;margin-top:8px'>"
+            "<table><thead><tr><th>Символ с дырой</th><th>Нужно с</th><th>Факт с</th><th>%</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+    return (
+        f"<div class='card' style='border-color:{bd};background:{bg}'>"
+        f"<div class='metrics' style='margin:0'>"
+        f"<span class='metric' style='background:#fff;border-color:{bd}'>"
+        f"Полнота истории: <b style='font-size:1.25rem'>{score}%</b> — {html.escape(str(label))}</span>"
+        f"<span class='metric'>Сделок с барами: <b>{q.get('trade_coverage_pct', 0)}%</b> "
+        f"({q.get('n_simulated', 0)}/{q.get('n_total', 0)})</span>"
+        f"<span class='metric'>NO_DATA: <b>{q.get('n_no_data', 0)}</b></span>"
+        f"<span class='metric'>Символы с дырами: <b>{sym_bad}/{sym_tot}</b></span>"
+        f"</div>"
+        f"<p class='hint' style='margin:10px 0 0;color:inherit'>{hint}</p>"
+        f"{table}</div>"
+    )
+
+
 def _backtest_summary() -> dict:
     import csv
 
@@ -275,8 +333,23 @@ def _backtest_summary() -> dict:
     sl = sum(1 for r in rows if r["outcome"] == "SL")
     manual = sum(1 for r in rows if r["outcome"] == "MANUAL")
     cancelled = sum(1 for r in rows if r["outcome"] == "CANCELLED")
+    nodata = sum(1 for r in rows if r["outcome"] == "NO_DATA")
     wr = round(tp / (tp + sl) * 100, 1) if tp + sl else 0.0
     sum_r = _sum_pnl_r(rows)
+    quality = _load_history_quality()
+    q_score = (quality or {}).get("quality_score")
+    q_label = (quality or {}).get("quality_label") or (quality or {}).get("quality_status")
+    reliable = bool((quality or {}).get("reliable"))
+    msg = (
+        f"Анализ M1: {len(rows)} сделок → "
+        f"TP {tp} / SL {sl} / закрыто по посту {manual} / лимит снят {cancelled}"
+        f"{f' / без истории {nodata}' if nodata else ''}, "
+        f"винрейт {wr}%, сумма {sum_r}R (только по просчитанным)."
+    )
+    if q_score is not None:
+        msg = f"Полнота истории {q_score}% ({q_label}). " + msg
+        if not reliable:
+            msg += " Итог НЕ полный — на другом ПК с полной историей цифры будут другими."
     return {
         "ok": True,
         "count": len(rows),
@@ -284,17 +357,18 @@ def _backtest_summary() -> dict:
         "sl": sl,
         "manual": manual,
         "cancelled": cancelled,
+        "no_data": nodata,
         "winrate": wr,
         "sum_R": sum_r,
         "md_path": str(md),
         "csv_path": str(csv_path),
         "md_text": md_text,
         "rows": rows[:120],
-        "message": (
-            f"Анализ M1: {len(rows)} сделок → "
-            f"TP {tp} / SL {sl} / закрыто по посту {manual} / лимит снят {cancelled}, "
-            f"винрейт {wr}%, сумма {sum_r}R."
-        ),
+        "quality": quality,
+        "quality_score": q_score,
+        "quality_label": q_label,
+        "reliable": reliable,
+        "message": msg,
     }
 
 
@@ -534,6 +608,8 @@ def _render_report_page() -> bytes:
     sum_r = _sum_pnl_r(rows)
     wr = round(tp / (tp + sl) * 100, 1) if tp + sl else 0.0
     sum_cls = "good" if sum_r >= 0 else "bad"
+    nodata = sum(1 for r in rows if (r.get("outcome") or "").upper() == "NO_DATA")
+    quality = _load_history_quality()
 
     metrics = (
         f"<div class='metrics'>"
@@ -543,6 +619,7 @@ def _render_report_page() -> bytes:
         f"<span class='metric'>Winrate: <b>{wr}%</b></span>"
         f"<span class='metric {sum_cls}'>Сумма R: <b>{sum_r:+.2f}</b></span>"
         + (f"<span class='metric warn'>MANUAL: <b>{manual}</b></span>" if manual else "")
+        + (f"<span class='metric warn'>NO_DATA: <b>{nodata}</b></span>" if nodata else "")
         + (f"<span class='metric warn'>Прочее: <b>{other}</b></span>" if other else "")
         + "</div>"
     )
@@ -601,11 +678,13 @@ def _render_report_page() -> bytes:
         "<h1>Анализ сделок</h1>"
         "<p class='sub'>Бэктест по истории MT5 (M1). Зелёный = TP (прибыль), красный = SL (убыток).</p>"
         f"{_meta_banner_html()}"
+        f"{_quality_banner_html(quality)}"
         "<div class='actions-row'>"
         "<a class='btn-dl' href='/download/report'>⬇ Скачать отчёт</a>"
         "</div>"
         f"<div class='card'>{metrics}{table}"
         "<p class='hint'>Источник: output/backtest/backtest_latest.csv · "
+        "Полнота: output/backtest/history_quality.json · "
         "После правки парсера перезапустите шаг 2, чтобы обновить анализ.</p></div>"
     )
     return _view_shell("Анализ — SignalKit", body)
