@@ -728,17 +728,27 @@ def run_backtest() -> dict:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
 
+    print("Анализ: импорт MetaTrader5…", flush=True)
     import MetaTrader5 as mt5
 
     cp = cfg.load_settings()
     tf_name = backtest_timeframe(cp)
     tf_const = mt5_timeframe(mt5, tf_name)
 
+    print("Анализ: читаю signals / timeline…", flush=True)
     rows = load_timeline_rows()
-    print(f"Timeline events: {len(rows)} | TF={tf_name}")
+    print(f"Timeline events: {len(rows)} | TF={tf_name}", flush=True)
+    if not rows:
+        raise RuntimeError("Timeline пуст — сначала «1. Скачать сигналы»")
 
+    print("Анализ: подключение к MT5 (терминал должен быть открыт)…", flush=True)
     if not mt5.initialize():
         raise RuntimeError(f"MT5 не открыт / не залогинен: {mt5.last_error()}")
+    acc = mt5.account_info()
+    if acc is None:
+        mt5.shutdown()
+        raise RuntimeError("MT5 открыт, но нет входа в счёт — залогиньтесь и повторите")
+    print(f"Анализ: MT5 OK — {acc.server} / login {acc.login}", flush=True)
 
     # group by chain
     chains: dict[str, list[dict]] = {}

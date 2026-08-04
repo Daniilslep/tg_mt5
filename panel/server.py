@@ -53,6 +53,12 @@ def _run_job_worker(job_id: str, name: str, args: list[str]) -> None:
     try:
         _job_log(job_id, f">>> Старт: {name}")
         _job_log(job_id, f"Команда: python {' '.join(args)}")
+        _job_log(
+            job_id,
+            "Подсказка: для анализа нужен открытый MT5 (вход в счёт). "
+            "M1 за год может идти долго — в журнале будет пульс «ещё работает».",
+        )
+        t0 = time.time()
         proc = subprocess.Popen(
             [sys.executable, "-u", *args],
             cwd=str(ROOT),
@@ -64,7 +70,43 @@ def _run_job_worker(job_id: str, name: str, args: list[str]) -> None:
             bufsize=1,
         )
         assert proc.stdout is not None
-        for line in proc.stdout:
+        import queue
+
+        q: queue.Queue[str | None] = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                for line in proc.stdout:
+                    q.put(line)
+            finally:
+                q.put(None)
+
+        threading.Thread(target=_reader, daemon=True).start()
+        while True:
+            try:
+                line = q.get(timeout=20)
+            except queue.Empty:
+                elapsed = int(time.time() - t0)
+                alive = proc.poll() is None
+                _job_log(
+                    job_id,
+                    f"…ещё работает ({elapsed}с)"
+                    + ("" if alive else ", процесс завершился — дочитываю лог"),
+                )
+                if not alive:
+                    # дочитать остаток очереди
+                    while True:
+                        try:
+                            line = q.get_nowait()
+                        except queue.Empty:
+                            line = None
+                        if line is None:
+                            break
+                        _job_log(job_id, line.rstrip())
+                    break
+                continue
+            if line is None:
+                break
             _job_log(job_id, line.rstrip())
         code = proc.wait()
         _job_log(job_id, f"<<< Готово, код={code}")

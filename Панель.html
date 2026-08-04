@@ -694,8 +694,11 @@ async function runJob(name){
 async function pollJob(jobId, jobName){
   const logEl = document.getElementById('log');
   const badge = document.getElementById('jobBadge');
+  // backtest M1 за год может идти часами — не обрываем опрос через 1 час
+  const maxSec = (jobName === 'backtest') ? 21600 : 7200;
   let guard = 0;
-  while(guard < 3600){
+  const t0 = Date.now();
+  while(guard < maxSec){
     guard++;
     try{
       const r = await fetch(API + '/api/job/' + jobId + '?t=' + Date.now());
@@ -711,13 +714,20 @@ async function pollJob(jobId, jobName){
         }
         return;
       }
-      badge.textContent = 'работает… ' + (j.lines || 0) + ' строк';
+      const mins = Math.floor((Date.now() - t0) / 60000);
+      const secs = Math.floor(((Date.now() - t0) % 60000) / 1000);
+      badge.textContent = 'работает… ' + mins + 'м ' + secs + 'с · ' + (j.lines || 0) + ' строк';
     }catch(e){
       logEl.textContent += '\nОшибка опроса: ' + e;
     }
     await new Promise(res => setTimeout(res, 1000));
   }
-  badge.textContent = 'таймаут';
+  badge.textContent = 'таймаут опроса';
+  logEl.textContent +=
+    '\n\n=== Таймаут опроса панели ===\n' +
+    'Задача могла ещё идти в окне START.bat.\n' +
+    'Проверьте чёрное окно движка и MT5 (вход в счёт).\n' +
+    'Обновите страницу и нажмите «Показать отчёт», если анализ уже закончился.';
 }
 
 document.getElementById('btnParse').addEventListener('click', () => runJob('parse'));
