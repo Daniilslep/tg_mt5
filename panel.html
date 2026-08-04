@@ -368,7 +368,7 @@ table.res tr:nth-child(even){background:#faf8f3}
         <b>Шаг 2 «Анализ сделок»</b> — прогоняет эти сделки по истории вашего MT5 и считает TP/SL/винрейт.<br/>
         После нажатия кнопки сюда автоматически подтянется ответ.
       </div>
-      <div id="resultsSummary" class="banner" style="margin-top:12px;display:none"></div>
+      <div id="resultsSummary" style="margin-top:12px;display:none;padding:16px 18px;border-radius:14px;border:1px solid var(--line);background:#fcfbf8;color:#1a1f1c"></div>
       <div class="actions" style="margin-top:10px">
         <button type="button" class="btn btn-sec" id="btnShowSignals">Показать таблицу сигналов</button>
         <button type="button" class="btn btn-sec" id="btnShowBacktest">Показать анализ</button>
@@ -550,7 +550,7 @@ async function showSignals(){
       '<span class="metric">Цепочек: <b>' + (j.chains || 0) + '</b></span>' +
       '<span class="metric">Не разобрано: <b>' + j.fail + '</b></span>' +
       '</div>' +
-      '<div class="hint" style="color:#ddd;margin-top:8px">' +
+      '<div style="font-size:.85rem;color:#5c6560;margin-top:8px">' +
       'Цепочка привязана к id первого сигнала. Корректировки меняют ту же сделку.</div>';
 
     let html = '<table class="res"><thead><tr>' +
@@ -610,20 +610,20 @@ async function showBacktest(){
     let qBlock = '';
     if(qScore != null){
       qBlock =
-        '<div style="margin-top:10px;padding:12px 14px;border-radius:12px;border:1px solid ' + qBd + ';background:' + qBg + '">' +
-        '<div><b>Полнота истории: ' + qScore + '% — ' + esc(String(qLabel)) + '</b></div>' +
-        '<div class="hint" style="margin-top:6px;color:inherit">' +
+        '<div style="margin-top:10px;padding:12px 14px;border-radius:12px;border:1px solid ' + qBd + ';background:' + qBg + ';color:#1a1f1c">' +
+        '<div style="color:#1a1f1c"><b>Полнота истории: ' + qScore + '% — ' + esc(String(qLabel)) + '</b></div>' +
+        '<div style="margin-top:6px;font-size:.85rem;line-height:1.45;color:#1a1f1c">' +
         'Сделок с барами: <b>' + (q.trade_coverage_pct != null ? q.trade_coverage_pct : '—') + '%</b> · ' +
         'NO_DATA: <b>' + (j.no_data != null ? j.no_data : (q.n_no_data || 0)) + '</b> · ' +
         'дыры по символам: <b>' + (q.symbols_incomplete || 0) + '/' + (q.symbols_total || 0) + '</b>' +
         '</div>' +
-        (q.hint ? '<div class="hint" style="margin-top:6px;color:inherit">' + esc(q.hint) + '</div>' : '') +
-        (reliable ? '' : '<div class="hint" style="margin-top:6px;color:#8b2e2e"><b>Сумма R неполная</b> — на другом ПК с полной историей итог будет другим.</div>') +
+        (q.hint ? '<div style="margin-top:6px;font-size:.85rem;line-height:1.45;color:#1a1f1c">' + esc(q.hint) + '</div>' : '') +
+        (reliable ? '' : '<div style="margin-top:6px;font-size:.85rem;line-height:1.45;color:#8b2e2e"><b>Сумма R неполная</b> — на другом ПК с полной историей итог будет другим.</div>') +
         '</div>';
     }
     sum.innerHTML =
-      '<strong>Результат шага 2 — бэктест на истории MT5 (M1)</strong><br/>' +
-      esc(j.message) +
+      '<strong style="color:#1a1f1c">Результат шага 2 — бэктест на истории MT5 (M1)</strong><br/>' +
+      '<span style="color:#1a1f1c">' + esc(j.message) + '</span>' +
       qBlock +
       '<div style="margin-top:10px">' +
       '<span class="metric">Сигналов: <b>' + j.count + '</b></span>' +
@@ -633,7 +633,7 @@ async function showBacktest(){
       '<span class="metric" style="background:' + sumBg + ';color:' + sumColor + ';border-color:' + (sumR < 0 ? '#e8b4b4' : (sumR > 0 ? '#9fd0b4' : '#d8d3c8')) + '">Сумма: <b>' + j.sum_R + 'R</b></span>' +
       (j.no_data ? '<span class="metric" style="background:#fdeeee;border-color:#e8b4b4">NO_DATA: <b>' + j.no_data + '</b></span>' : '') +
       '</div>' +
-      '<div class="hint" style="color:#ddd;margin-top:8px">Файлы: output\\\\backtest\\\\backtest_latest.* и history_quality.json</div>';
+      '<div style="font-size:.85rem;color:#5c6560;margin-top:8px">Файлы: output\\\\backtest\\\\backtest_latest.* и history_quality.json</div>';
 
     let html = '<table class="res" style="margin-top:12px"><thead><tr>' +
       '<th>Дата</th><th>Цепочка</th><th>Символ</th><th>Сторона</th><th>Итог</th><th>PnL R</th><th>Entry</th><th>SL</th><th>TP</th><th>Заметка</th>' +
