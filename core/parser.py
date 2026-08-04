@@ -959,7 +959,15 @@ def save_outputs(signals: list[ParsedSignal], channel: str, days_back: int, mode
 
 def run_parse(mode: str | None = None) -> dict:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     cp = cfg.load_settings()
     channel = cfg.get(cp, "telegram", "channel")
