@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //|                                           TG_Signal_Live_EA.mq5  |
 //|  Универсальный live-робот: канал Telegram → сделки MT5.          |
 //|  Правила разбора: inputs ИЛИ файл                                |
@@ -8,7 +8,7 @@
 //|  WebRequest: https://t.me                                        |
 //+------------------------------------------------------------------+
 #property copyright "SignalKit"
-#property version   "1.20"
+#property version   "1.21"
 #property description "Universal TG→MT5 live + chains. Allow WebRequest https://t.me"
 
 #include <Trade/Trade.mqh>
@@ -295,6 +295,37 @@ bool FetchChannelHtml(string &html)
    html=CharArrayToString(result,0,WHOLE_ARRAY,CP_UTF8);
    if(StringLen(html)<100) html=CharArrayToString(result,0,WHOLE_ARRAY,CP_ACP);
    return StringLen(html)>100;
+  }
+
+// Посты с картинкой часто без tgme_widget_message_text на /s/ (text_not_supported).
+// Текст берём со страницы https://t.me/<channel>/<id> → og:description.
+string FetchPostOgText(const long mid)
+  {
+   if(g_channel=="" || mid<=0) return "";
+   string url=StringFormat("https://t.me/%s/%I64d",g_channel,mid);
+   char post[]; ArrayResize(post,0); char result[]; string hdrs;
+   string req=
+      "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0\r\n"
+      "Accept: text/html\r\nAccept-Language: ru,en;q=0.8\r\nAccept-Encoding: identity\r\n";
+   ResetLastError();
+   int code=WebRequest("GET",url,req,15000,post,result,hdrs);
+   if(code!=200) return "";
+   string html=CharArrayToString(result,0,WHOLE_ARRAY,CP_UTF8);
+   if(StringLen(html)<50) html=CharArrayToString(result,0,WHOLE_ARRAY,CP_ACP);
+   int p=StringFind(html,"property=\"og:description\"");
+   if(p<0) p=StringFind(html,"property='og:description'");
+   if(p<0) return "";
+   int c=StringFind(html,"content=\"",p);
+   if(c<0) return "";
+   c+=StringLen("content=\"");
+   int e=StringFind(html,"\"",c);
+   if(e<=c) return "";
+   string desc=StringSubstr(html,c,e-c);
+   desc=HtmlUnescape(desc);
+   StringReplace(desc,"&#10;","\n");
+   StringReplace(desc,"&#xa;","\n");
+   StringReplace(desc,"\\n","\n");
+   return desc;
   }
 
 double ParsePriceToken(string s)
@@ -646,6 +677,25 @@ int ParsePageSignals(const string html,SSig &out[])
          if(take>0) text=StringSubstr(block,gt+1,take); }}
       StringReplace(text,ShortToString((ushort)160)," ");
       text=HtmlUnescape(text);
+      // картинка / text_not_supported: на /s/ нет текста — добираем og:description
+      // только для НОВЫХ постов после bootstrap (не долбить WebRequest на всю историю)
+      if(StringLen(text)<25 && g_bootstrapped && mid>g_seen_max_id)
+        {
+         bool need_og=(StringFind(block,"text_not_supported")>=0 ||
+                       StringFind(block,"media_not_supported")>=0 ||
+                       ti<0);
+         if(need_og)
+           {
+            string og=FetchPostOgText(mid);
+            if(StringLen(og)>=25)
+              {
+               text=og;
+               PrintFormat("OG-text #%I64d (%d chars)",mid,StringLen(text));
+              }
+            else
+               PrintFormat("SKIP #%I64d: нет текста на /s/ и в og:description",mid);
+           }
+        }
       string up=text; StringToUpper(up);
       // кандидаты: must / стоп / рынок / inherit / #symbol с manage
       bool cand=HasAllMust(up,g_must) || StringFind(up,"SL")>=0 || StringFind(up,"СТОП")>=0 ||
@@ -1062,9 +1112,11 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(InpSlippagePoints);
    LoadDone(); LoadRulesFile();
-   Print("=== SignalKit Live EA v1.20 (chains+inherit) ===");
+   Print("=== SignalKit Live EA v1.21 (OG fallback for media posts) ===");
    PrintFormat("Channel t.me/s/%s | DryRun=%s | lot=%.2f | rr=%.2f | manage=%s",
                g_channel,(InpDryRun?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"));
+   if(InpIgnoreHistory)
+      Print("InpIgnoreHistory=true — посты, уже видимые при старте, НЕ торгуются (только новые).");
    EventSetTimer(MathMax(5,InpPollSeconds));
    PollTelegram();
    return INIT_SUCCEEDED;
