@@ -8,7 +8,7 @@
 //|  WebRequest: https://t.me                                        |
 //+------------------------------------------------------------------+
 #property copyright "SignalKit"
-#property version   "1.21"
+#property version   "1.22"
 #property description "Universal TG→MT5 live + chains. Allow WebRequest https://t.me"
 
 #include <Trade/Trade.mqh>
@@ -19,7 +19,7 @@ input group "=== Telegram ==="
 input string InpChannel          = "";
 input int    InpPollSeconds      = 10;
 input bool   InpIgnoreHistory    = true;
-input int    InpMaxSignalAgeSec  = 3600;
+input int    InpMaxSignalAgeSec  = 86400;  // 24ч — дневные сигналы канала часто старше 1 часа
 input bool   InpLoadRulesFile    = true;   // читать SignalKit\\parse_rules.txt
 
 input group "=== Разбор поста (если нет файла) ==="
@@ -677,23 +677,33 @@ int ParsePageSignals(const string html,SSig &out[])
          if(take>0) text=StringSubstr(block,gt+1,take); }}
       StringReplace(text,ShortToString((ushort)160)," ");
       text=HtmlUnescape(text);
-      // картинка / text_not_supported: на /s/ нет текста — добираем og:description
-      // только для НОВЫХ постов после bootstrap (не долбить WebRequest на всю историю)
-      if(StringLen(text)<25 && g_bootstrapped && mid>g_seen_max_id)
+      // Картинка / text_not_supported: на /s/ нет текста.
+      // Раньше OG брали только при mid>g_seen_max_id — после Bootstrap max уже
+      // включает такие посты, и они навсегда терялись. Берём OG для любого
+      // ещё не обработанного свежего поста без текста.
+      if(StringLen(text)<25 && !IsDone(mid))
         {
          bool need_og=(StringFind(block,"text_not_supported")>=0 ||
                        StringFind(block,"media_not_supported")>=0 ||
                        ti<0);
          if(need_og)
            {
-            string og=FetchPostOgText(mid);
-            if(StringLen(og)>=25)
+            long age_og=0;
+            if(when>0) age_og=(long)(TimeGMT()-when);
+            int age_lim=(InpMaxSignalAgeSec>0 ? InpMaxSignalAgeSec : 86400);
+            // на самом первом опросе (ещё не bootstrap) тоже пробуем свежие
+            bool try_og=(!g_bootstrapped) || (when==0) || (age_og<=age_lim);
+            if(try_og)
               {
-               text=og;
-               PrintFormat("OG-text #%I64d (%d chars)",mid,StringLen(text));
+               string og=FetchPostOgText(mid);
+               if(StringLen(og)>=25)
+                 {
+                  text=og;
+                  PrintFormat("OG-text #%I64d (%d chars, age=%Id s)",mid,StringLen(text),age_og);
+                 }
+               else
+                  PrintFormat("SKIP #%I64d: нет текста на /s/ и в og:description",mid);
               }
-            else
-               PrintFormat("SKIP #%I64d: нет текста на /s/ и в og:description",mid);
            }
         }
       string up=text; StringToUpper(up);
@@ -1029,7 +1039,9 @@ bool ExecSig(SSig &s)
    if(!InOnly(s.symbol)){ MarkDone(s.msg_id); g_skipped++; return true; }
    if(InpMaxSignalAgeSec>0 && s.time_utc>0)
      { long age=(long)(TimeGMT()-s.time_utc);
-       if(age>InpMaxSignalAgeSec){ MarkDone(s.msg_id); g_skipped++; return true; } }
+       if(age>InpMaxSignalAgeSec)
+         { PrintFormat("SKIP #%I64d age=%Id s > MaxAge=%d",s.msg_id,age,InpMaxSignalAgeSec);
+           MarkDone(s.msg_id); g_skipped++; return true; } }
    string sym=Resolve(s.symbol);
    if(sym==""){ PrintFormat("SKIP %I64d %s: no symbol",s.msg_id,s.symbol); MarkDone(s.msg_id); g_skipped++; return true; }
    if(Already(sym,s.msg_id)){ MarkDone(s.msg_id); return true; }
@@ -1094,14 +1106,28 @@ void PollTelegram()
       for(int i=0;i<n;i++) if(sigs[i].msg_id>g_seen_max_id) g_seen_max_id=sigs[i].msg_id;
       g_bootstrapped=true;
       if(InpIgnoreHistory)
-        { for(int i=0;i<n;i++) MarkDone(sigs[i].msg_id);
-          PrintFormat("Bootstrap OK max_id=%I64d parsed=%d — ждём НОВЫЕ посты",g_seen_max_id,n);
-          return; }
+        {
+         // В done — только СТАРЫЕ по возрасту. Свежие (в т.ч. media/OG) торгуем ниже.
+         int marked=0;
+         for(int i=0;i<n;i++)
+           {
+            long age=0;
+            if(sigs[i].time_utc>0) age=(long)(TimeGMT()-sigs[i].time_utc);
+            if(InpMaxSignalAgeSec>0 && age>InpMaxSignalAgeSec)
+              { MarkDone(sigs[i].msg_id); marked++; }
+           }
+         PrintFormat("Bootstrap OK max_id=%I64d parsed=%d old_skipped=%d — свежие в пределах MaxAge обработаем",
+                     g_seen_max_id,n,marked);
+         // НЕ return — сразу обрабатываем свежие
+        }
+      else
+         PrintFormat("Bootstrap OK max_id=%I64d parsed=%d (IgnoreHistory=false)",g_seen_max_id,n);
      }
    for(int i=0;i<n;i++)
      {
-      if(InpIgnoreHistory && sigs[i].msg_id<=g_seen_max_id){ MarkDone(sigs[i].msg_id); continue; }
       if(IsDone(sigs[i].msg_id)) continue;
+      // Больше НЕ режем по msg_id<=g_seen_max_id: иначе media-посты без текста
+      // на старте навсегда теряются (max уже включает их id).
       ExecSig(sigs[i]);
       if(sigs[i].msg_id>g_seen_max_id) g_seen_max_id=sigs[i].msg_id;
      }
@@ -1112,11 +1138,11 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(InpSlippagePoints);
    LoadDone(); LoadRulesFile();
-   Print("=== SignalKit Live EA v1.21 (OG fallback for media posts) ===");
-   PrintFormat("Channel t.me/s/%s | DryRun=%s | lot=%.2f | rr=%.2f | manage=%s",
-               g_channel,(InpDryRun?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"));
+   Print("=== SignalKit Live EA v1.22 (OG + catch fresh media on start) ===");
+   PrintFormat("Channel t.me/s/%s | DryRun=%s | lot=%.2f | rr=%.2f | manage=%s | MaxAge=%d s",
+               g_channel,(InpDryRun?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"),InpMaxSignalAgeSec);
    if(InpIgnoreHistory)
-      Print("InpIgnoreHistory=true — посты, уже видимые при старте, НЕ торгуются (только новые).");
+      Print("InpIgnoreHistory=true — старые посты (старше MaxAge) пропускаем; свежие media/OG берём.");
    EventSetTimer(MathMax(5,InpPollSeconds));
    PollTelegram();
    return INIT_SUCCEEDED;
