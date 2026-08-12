@@ -1,4 +1,4 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                           TG_Signal_Live_EA.mq5  |
 //|  Универсальный live-робот: канал Telegram → сделки MT5.          |
 //|  Правила разбора: inputs ИЛИ файл                                |
@@ -8,7 +8,7 @@
 //|  WebRequest: https://t.me                                        |
 //+------------------------------------------------------------------+
 #property copyright "SignalKit"
-#property version   "1.22"
+#property version   "1.23"
 #property description "Universal TG→MT5 live + chains. Allow WebRequest https://t.me"
 
 #include <Trade/Trade.mqh>
@@ -357,6 +357,17 @@ bool HasAllMust(const string hay_up,const string pipe_words)
    return true;
   }
 
+// Формальный сигнал: метки «Тип сделки» + «Стоп лосс» (без учёта регистра)
+bool IsFormalLabels(const string up)
+  {
+   if(g_lab_side=="") return false;
+   string lab=g_lab_side; StringToUpper(lab);
+   if(StringFind(up,lab)<0) return false;
+   if(g_lab_sl!="")
+     { string lsl=g_lab_sl; StringToUpper(lsl); if(StringFind(up,lsl)<0) return false; }
+   return true;
+  }
+
 string ExtractAfterLabel(const string text,const string label)
   {
    if(label=="") return "";
@@ -491,24 +502,31 @@ int DetectSide(const string t,const string up,const string sideblob)
 int DetectAction(const string up,const bool formal)
   {
    if(formal) return 0; // open
-   if(HasPipeWord(up,g_m_close)) return 1;
+   // Управляющие слова ищем только в «шапке» — не в длинном комментарии/истории
+   int cut=StringFind(up,"КОММЕНТ");
+   if(cut<0) cut=StringFind(up,"ПРИМЕЧ");
+   if(cut<0) cut=StringFind(up,"ИСТОР");
+   if(cut<0 || cut>500) cut=(StringLen(up)<500?StringLen(up):500);
+   string head=StringSubstr(up,0,cut);
+
+   if(HasPipeWord(head,g_m_close)) return 1;
    // BE раньше reverse, но после close
-   if(HasPipeWord(up,g_m_be) || StringFind(up,"НА ТОЧКУ ВХОДА")>=0 || StringFind(up,"ТОЧКУ ВХОДА")>=0)
+   if(HasPipeWord(head,g_m_be) || StringFind(head,"НА ТОЧКУ ВХОДА")>=0 || StringFind(head,"ТОЧКУ ВХОДА")>=0)
      {
       // «у точки входа, закрываем» уже поймано close
       return 2;
      }
-   if(HasPipeWord(up,g_m_reverse) ||
-      (StringFind(up,"ЗАКРЫВА")>=0 && (StringFind(up,"ЗАХОДИМ")>=0 || StringFind(up,"ОТКРЫВАЕМ")>=0)))
+   if(HasPipeWord(head,g_m_reverse) ||
+      (StringFind(head,"ЗАКРЫВА")>=0 && (StringFind(head,"ЗАХОДИМ")>=0 || StringFind(head,"ОТКРЫВАЕМ")>=0)))
       return 6;
-   if(HasPipeWord(up,g_m_levels) || StringFind(up,"МЕНЯЕМ ЦЕНУ")>=0) return 4;
-   if(HasPipeWord(up,g_m_cancel) && (HasPipeWord(up,g_m_market) || HasPipeWord(up,g_m_inherit) || StringFind(up,"ЦЕНА ОТКРЫТИЯ")>=0))
+   if(HasPipeWord(head,g_m_levels) || StringFind(head,"МЕНЯЕМ ЦЕНУ")>=0) return 4;
+   if(HasPipeWord(head,g_m_cancel) && (HasPipeWord(head,g_m_market) || HasPipeWord(head,g_m_inherit) || StringFind(head,"ЦЕНА ОТКРЫТИЯ")>=0))
       return 5;
-   if(HasPipeWord(up,g_m_cancel)) return 7;
-   if(HasPipeWord(up,g_m_modify)) return 3;
-   if(HasPipeWord(up,g_m_market) && (HasPipeWord(up,g_m_inherit) || StringFind(up,"ЦЕНА ОТКРЫТИЯ")>=0 || StringFind(up,"ОТКРЫВА")>=0))
+   if(HasPipeWord(head,g_m_cancel)) return 7;
+   if(HasPipeWord(head,g_m_modify)) return 3;
+   if(HasPipeWord(head,g_m_market) && (HasPipeWord(head,g_m_inherit) || StringFind(head,"ЦЕНА ОТКРЫТИЯ")>=0 || StringFind(head,"ОТКРЫВА")>=0))
       return 5;
-   if(HasPipeWord(up,g_m_market) || StringFind(up,"ЦЕНА ОТКРЫТИЯ")>=0 || StringFind(up,"СТОП ЛОСС")>=0)
+   if(HasPipeWord(head,g_m_market) || StringFind(head,"ЦЕНА ОТКРЫТИЯ")>=0)
       return 5; // replace_or_open → в Exec разберём
    return 0;
   }
@@ -519,7 +537,7 @@ bool ParseSignalText(const string text_in,SSig &sig)
    string up=t; StringToUpper(up);
    sig.text=t; sig.inherit=false; sig.action=0; sig.tp_open=false;
 
-   bool formal=(g_lab_side!="" && StringFind(up,g_lab_side)>=0);
+   bool formal=IsFormalLabels(up);
    bool manage_hit=g_manage && (
       HasPipeWord(up,g_m_cancel)||HasPipeWord(up,g_m_reverse)||HasPipeWord(up,g_m_modify)||
       HasPipeWord(up,g_m_close)||HasPipeWord(up,g_m_be)||HasPipeWord(up,g_m_market)||
@@ -941,6 +959,7 @@ bool ApplyManage(SSig &s)
          PrintFormat("MANAGE BE #%I64d %s SL->entry %.5f",s.msg_id,sym,nsl);
          return true;
         }
+      PrintFormat("MANAGE BE #%I64d %s — нет позиции",s.msg_id,sym);
       return true; // нечего двигать
      }
    if(act==3) // modify_sl
@@ -1044,7 +1063,8 @@ bool ExecSig(SSig &s)
            MarkDone(s.msg_id); g_skipped++; return true; } }
    string sym=Resolve(s.symbol);
    if(sym==""){ PrintFormat("SKIP %I64d %s: no symbol",s.msg_id,s.symbol); MarkDone(s.msg_id); g_skipped++; return true; }
-   if(Already(sym,s.msg_id)){ MarkDone(s.msg_id); return true; }
+   if(Already(sym,s.msg_id))
+     { PrintFormat("SKIP #%I64d %s: already open",s.msg_id,sym); MarkDone(s.msg_id); return true; }
 
    // сопровождение цепочки
    if(g_manage)
@@ -1065,7 +1085,8 @@ bool ExecSig(SSig &s)
    if(s.entry<=0 && s.is_limit==0)
       s.entry=(s.side>0)? tk.ask:tk.bid;
    if(s.side==0 || s.sl<=0)
-     { MarkDone(s.msg_id); g_skipped++; return true; }
+     { PrintFormat("SKIP #%I64d %s: side=%d sl=%.5f act=%d",s.msg_id,sym,s.side,s.sl,s.action);
+       MarkDone(s.msg_id); g_skipped++; return true; }
    if(s.tp<=0 && g_rr>0)
      { double risk=MathAbs(s.entry-s.sl);
        s.tp=(s.side>0)? s.entry+g_rr*risk : s.entry-g_rr*risk; }
@@ -1075,9 +1096,15 @@ bool ExecSig(SSig &s)
    double sl=NormPx(sym,s.sl), tp=NormPx(sym,s.tp);
    double ref=use_limit? price:(s.side>0?tk.ask:tk.bid);
    if(InpSkipBadDirection)
-     { if(s.side>0 && !(sl<ref && tp>ref)){ MarkDone(s.msg_id); g_skipped++; return true; }
-       if(s.side<0 && !(sl>ref && tp<ref)){ MarkDone(s.msg_id); g_skipped++; return true; } }
-   if(!AdjustStops(sym,s.side,ref,sl,tp)){ MarkDone(s.msg_id); g_skipped++; return true; }
+     { if(s.side>0 && !(sl<ref && tp>ref))
+         { PrintFormat("SKIP #%I64d %s: bad BUY dir ref=%.5f sl=%.5f tp=%.5f",s.msg_id,sym,ref,sl,tp);
+           MarkDone(s.msg_id); g_skipped++; return true; }
+       if(s.side<0 && !(sl>ref && tp<ref))
+         { PrintFormat("SKIP #%I64d %s: bad SELL dir ref=%.5f sl=%.5f tp=%.5f",s.msg_id,sym,ref,sl,tp);
+           MarkDone(s.msg_id); g_skipped++; return true; } }
+   if(!AdjustStops(sym,s.side,ref,sl,tp))
+     { PrintFormat("SKIP #%I64d %s: AdjustStops failed",s.msg_id,sym);
+       MarkDone(s.msg_id); g_skipped++; return true; }
    double lot=LotByRisk(sym,ref,sl);
    string cmt=InpCommentPrefix+IntegerToString(s.msg_id); if(StringLen(cmt)>31) cmt=StringSubstr(cmt,0,31);
    PrintFormat("SIGNAL #%I64d %s %s E=%.5f SL=%.5f TP=%.5f act=%d",
@@ -1138,7 +1165,7 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(InpSlippagePoints);
    LoadDone(); LoadRulesFile();
-   Print("=== SignalKit Live EA v1.22 (OG + catch fresh media on start) ===");
+   Print("=== SignalKit Live EA v1.23 (formal labels + manage head-only) ===");
    PrintFormat("Channel t.me/s/%s | DryRun=%s | lot=%.2f | rr=%.2f | manage=%s | MaxAge=%d s",
                g_channel,(InpDryRun?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"),InpMaxSignalAgeSec);
    if(InpIgnoreHistory)
