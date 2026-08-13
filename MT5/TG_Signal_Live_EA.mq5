@@ -8,7 +8,7 @@
 //|  WebRequest: https://t.me                                        |
 //+------------------------------------------------------------------+
 #property copyright "SignalKit"
-#property version   "1.23"
+#property version   "1.24"
 #property description "Universal TG→MT5 live + chains. Allow WebRequest https://t.me"
 
 #include <Trade/Trade.mqh>
@@ -52,7 +52,11 @@ input long   InpMagic            = 26080299;
 input string InpCommentPrefix    = "SK#";
 input bool   InpSkipBadDirection = true;
 input int    InpMaxStopAdjustPts = 80;
-input bool   InpDryRun           = true;
+input bool   InpDryRun           = false; // false = реальные ордера
+
+input group "=== Эмуляция (тест без Telegram) ==="
+input bool   InpEmulateMode      = false; // читать SignalKit\\emulate_inbox.txt
+input string InpEmulateFile      = "SignalKit\\emulate_inbox.txt";
 
 input group "=== Символы / лог ==="
 input string InpOnlySymbols      = "";
@@ -137,6 +141,28 @@ string Resolve(const string csv)
         { string name=SymbolName(i,false); if(BaseKey(name)==want && SymOk(name)){ CacheSet(csv,name); return name; } }
      }
    CacheSet(csv,""); return "";
+  }
+
+bool EffectiveDryRun()
+  {
+   // Файл-форс: Common\Files\SignalKit\force_live.txt → всегда реальные ордера
+   if(FileIsExist("SignalKit\\force_live.txt",FILE_COMMON)) return false;
+   return InpDryRun;
+  }
+
+bool EffectiveEmulate()
+  {
+   if(InpEmulateMode) return true;
+   // Авто: если inbox не пустой — обрабатываем эмуляцию
+   string path=InpEmulateFile;
+   int flags=FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ;
+   if(InpUseCommonFolder) flags|=FILE_COMMON;
+   int fh=FileOpen(path,flags);
+   if(fh==INVALID_HANDLE) return false;
+   string sample="";
+   if(!FileIsEnding(fh)) sample=FileReadString(fh);
+   FileClose(fh);
+   return (StringFind(sample,"###ID=")>=0);
   }
 
 bool IsDone(const long id){ for(int i=0;i<ArraySize(g_done);i++) if(g_done[i]==id) return true; return false; }
@@ -331,10 +357,19 @@ string FetchPostOgText(const long mid)
 double ParsePriceToken(string s)
   {
    StringTrimLeft(s); StringTrimRight(s); StringReplace(s," ",""); StringReplace(s,"\xA0","");
-   int c=StringFind(s,","), d=StringFind(s,".");
-   if(c>=0 && d>=0){ if(c>d){ StringReplace(s,".",""); StringReplace(s,",","."); } else StringReplace(s,",",""); }
-   else if(c>=0) StringReplace(s,",",".");
-   return StringToDouble(s);
+   // Только первый ценовой токен: 162.415 / 159,330 — НЕ весь хвост комментария
+   string tok="";
+   bool seen_sep=false;
+   for(int i=0;i<StringLen(s);i++)
+     {
+      ushort c=StringGetCharacter(s,i);
+      if(c>='0' && c<='9'){ tok+=ShortToString(c); continue; }
+      if((c=='.' || c==',') && !seen_sep && StringLen(tok)>0)
+        { tok+="."; seen_sep=true; continue; }
+      break;
+     }
+   if(tok=="" || tok==".") return 0;
+   return StringToDouble(tok);
   }
 
 bool HasPipeWord(const string hay_up,const string pipe_words)
@@ -396,13 +431,24 @@ string NormalizeText(string t)
 double FirstPriceIn(string s)
   {
    StringTrimLeft(s); StringTrimRight(s);
-   // пропуск нецифровых префиксов
+   // пропуск нецифровых префиксов — ParsePriceToken сам отрежет хвост
    for(int i=0;i<StringLen(s);i++)
      {
       ushort c=StringGetCharacter(s,i);
       if((c>='0'&&c<='9')) return ParsePriceToken(StringSubstr(s,i));
      }
    return 0;
+  }
+
+// Защита от «162415» вместо 162.415 (склейка с числом из комментария)
+bool PricesSane(const double entry,const double sl)
+  {
+   if(entry<=0 || sl<=0) return false;
+   double mx=MathMax(entry,sl), mn=MathMin(entry,sl);
+   if(mn<=0) return false;
+   // относительный разрыв стопа обычно << 50% цены; 162415/160 = ~1000x
+   if(mx/mn > 3.0) return false;
+   return true;
   }
 
 double ExtractEntryPrice(const string t,const string up)
@@ -599,9 +645,14 @@ bool ParseSignalText(const string text_in,SSig &sig)
       sl=ExtractSlPrice(t,up);
       ExtractTpPrice(t,up,tp,tp_open);
 
-      if(HasPipeWord(up,g_m_cancel) || HasPipeWord(up,g_m_market) || StringFind(up,"РЫНК")>=0)
-         is_limit=0;
-      else if(StringFind(up,"ЛИМИТ")>=0 && StringFind(up,"УДАЛЯ")<0) is_limit=1;
+      // «по рыночной цене» в комментарии НЕ отменяет формальный «Лимитный ордер»
+      bool formal_limit=(formal && is_limit!=0);
+      if(!formal_limit)
+        {
+         if(HasPipeWord(up,g_m_cancel) || HasPipeWord(up,g_m_market) || StringFind(up,"РЫНК")>=0)
+            is_limit=0;
+         else if(StringFind(up,"ЛИМИТ")>=0 && StringFind(up,"УДАЛЯ")<0) is_limit=1;
+        }
      }
 
    // сторона из геометрии
@@ -645,6 +696,7 @@ bool ParseSignalText(const string text_in,SSig &sig)
      }
 
    if(StringLen(sym)<3 || side==0 || entry<=0 || sl<=0) return false;
+   if(!PricesSane(entry,sl)) return false;
    if(side>0 && !(sl<entry)) return false;
    if(side<0 && !(sl>entry)) return false;
    if(tp_open || tp<=0)
@@ -813,7 +865,7 @@ bool CancelPendingBySymbol(const string sym)
       if(!g_ord.SelectByIndex(i)) continue;
       if(g_ord.Magic()!=InpMagic) continue;
       if(BaseKey(g_ord.Symbol())!=BaseKey(sym) && g_ord.Symbol()!=sym) continue;
-      if(InpDryRun){ PrintFormat("DRY cancel pending #%I64u",g_ord.Ticket()); any=true; continue; }
+      if(EffectiveDryRun()){ PrintFormat("DRY cancel pending #%I64u",g_ord.Ticket()); any=true; continue; }
       if(g_trade.OrderDelete(g_ord.Ticket())) any=true;
      }
    return any;
@@ -823,7 +875,7 @@ bool CloseMagicPos(const string sym)
   {
    ulong ticket; double vol;
    if(!FindMagicPos(sym,ticket,vol)) return false;
-   if(InpDryRun){ PrintFormat("DRY close %s ticket=%I64u",sym,ticket); return true; }
+   if(EffectiveDryRun()){ PrintFormat("DRY close %s ticket=%I64u",sym,ticket); return true; }
    return g_trade.PositionClose(ticket);
   }
 
@@ -834,7 +886,7 @@ bool ModifyMagicSL(const string sym,double new_sl,double new_tp)
    if(!g_pos.SelectByTicket(ticket)) return false;
    double sl=NormPx(sym,new_sl);
    double tp=(new_tp>0)? NormPx(sym,new_tp):g_pos.TakeProfit();
-   if(InpDryRun){ PrintFormat("DRY modify SL %s -> %.5f",sym,sl); return true; }
+   if(EffectiveDryRun()){ PrintFormat("DRY modify SL %s -> %.5f",sym,sl); return true; }
    return g_trade.PositionModify(ticket,sl,tp);
   }
 
@@ -913,7 +965,7 @@ bool ModifyPendingLevels(const string sym,double entry,double sl,double tp)
    double ne=(entry>0)? NormPx(sym,entry):px;
    double ns=(sl>0)? NormPx(sym,sl):psl;
    double nt=(tp>0)? NormPx(sym,tp):ptp;
-   if(InpDryRun){ PrintFormat("DRY modify pending #%I64u E=%.5f SL=%.5f",ticket,ne,ns); return true; }
+   if(EffectiveDryRun()){ PrintFormat("DRY modify pending #%I64u E=%.5f SL=%.5f",ticket,ne,ns); return true; }
    return g_trade.OrderModify(ticket,ne,ns,nt,ORDER_TIME_GTC,0);
   }
 
@@ -1087,6 +1139,9 @@ bool ExecSig(SSig &s)
    if(s.side==0 || s.sl<=0)
      { PrintFormat("SKIP #%I64d %s: side=%d sl=%.5f act=%d",s.msg_id,sym,s.side,s.sl,s.action);
        MarkDone(s.msg_id); g_skipped++; return true; }
+   if(!PricesSane(s.entry,s.sl))
+     { PrintFormat("SKIP #%I64d %s: insane prices E=%.5f SL=%.5f",s.msg_id,sym,s.entry,s.sl);
+       MarkDone(s.msg_id); g_skipped++; return true; }
    if(s.tp<=0 && g_rr>0)
      { double risk=MathAbs(s.entry-s.sl);
        s.tp=(s.side>0)? s.entry+g_rr*risk : s.entry-g_rr*risk; }
@@ -1107,20 +1162,83 @@ bool ExecSig(SSig &s)
        MarkDone(s.msg_id); g_skipped++; return true; }
    double lot=LotByRisk(sym,ref,sl);
    string cmt=InpCommentPrefix+IntegerToString(s.msg_id); if(StringLen(cmt)>31) cmt=StringSubstr(cmt,0,31);
-   PrintFormat("SIGNAL #%I64d %s %s E=%.5f SL=%.5f TP=%.5f act=%d",
-               s.msg_id,sym,(s.side>0?"BUY":"SELL"),s.entry,s.sl,s.tp,s.action);
-   if(InpDryRun){ PrintFormat("DRY-RUN lot=%.2f %s",lot,cmt); MarkDone(s.msg_id); g_opened++; return true; }
+   PrintFormat("SIGNAL #%I64d %s %s E=%.5f SL=%.5f TP=%.5f act=%d limit=%d",
+               s.msg_id,sym,(s.side>0?"BUY":"SELL"),s.entry,s.sl,s.tp,s.action,use_limit?1:0);
+   if(EffectiveDryRun()){ PrintFormat("DRY-RUN lot=%.2f %s",lot,cmt); MarkDone(s.msg_id); g_opened++; return true; }
    SelectFill(sym); bool ok=false;
-   if(use_limit) ok=(s.side>0)? g_trade.BuyLimit(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt)
-                              : g_trade.SellLimit(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt);
+   if(use_limit)
+     {
+      // BuyLimit ниже рынка; BuyStop выше. SellLimit выше рынка; SellStop ниже.
+      if(s.side>0)
+        {
+         if(tk.ask<price) ok=g_trade.BuyStop(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt);
+         else ok=g_trade.BuyLimit(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt);
+        }
+      else
+        {
+         if(tk.bid<price) ok=g_trade.SellLimit(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt);
+         else ok=g_trade.SellStop(lot,price,sym,sl,tp,ORDER_TIME_GTC,0,cmt);
+        }
+     }
    else ok=(s.side>0)? g_trade.Buy(lot,sym,price,sl,tp,cmt):g_trade.Sell(lot,sym,price,sl,tp,cmt);
    if(!ok){ PrintFormat("FAIL %s",g_trade.ResultRetcodeDescription()); g_failed++;
      uint rc=g_trade.ResultRetcode();
      if(rc==TRADE_RETCODE_INVALID_STOPS||rc==TRADE_RETCODE_NO_MONEY){ MarkDone(s.msg_id); return true; }
      return false; }
    MarkDone(s.msg_id); g_opened++;
-   PrintFormat("OPEN #%d %s %s lot=%.2f",g_opened,(s.side>0?"BUY":"SELL"),sym,lot);
+   PrintFormat("OPEN #%d %s %s lot=%.2f px=%.5f sl=%.5f tp=%.5f",g_opened,(s.side>0?"BUY":"SELL"),sym,lot,price,sl,tp);
    return true;
+  }
+
+// Эмуляция: файл Common\Files\SignalKit\emulate_inbox.txt
+// Формат блоков:
+// ###ID=9008964
+// текст поста...
+// ###END
+void PollEmulateInbox()
+  {
+   if(!InpEmulateMode) return;
+   int flags=FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE;
+   if(InpUseCommonFolder) flags|=FILE_COMMON;
+   int fh=FileOpen(InpEmulateFile,flags);
+   if(fh==INVALID_HANDLE) return;
+   string all="";
+   while(!FileIsEnding(fh)) all+=FileReadString(fh)+"\n";
+   FileClose(fh);
+   if(StringLen(all)<10) return;
+
+   int pos=0, processed=0;
+   while(true)
+     {
+      int a=StringFind(all,"###ID=",pos); if(a<0) break;
+      int id_start=a+6;
+      int nl=StringFind(all,"\n",id_start); if(nl<0) break;
+      long mid=StringToInteger(StringSubstr(all,id_start,nl-id_start));
+      int b=StringFind(all,"###END",nl); if(b<0) break;
+      string text=StringSubstr(all,nl+1,b-(nl+1));
+      pos=b+6;
+      if(mid<=0 || IsDone(mid)) continue;
+      SSig sig; ZeroMemory(sig);
+      sig.msg_id=mid; sig.time_utc=TimeGMT(); sig.text=text;
+      if(!ParseSignalText(text,sig))
+        {
+         PrintFormat("EMULATE fail parse #%I64d %s",mid,StringSubstr(text,0,120));
+         MarkDone(mid); g_skipped++; continue;
+        }
+      PrintFormat("EMULATE #%I64d %s side=%d lim=%d E=%.5f SL=%.5f TP=%.5f act=%d",
+                  mid,sig.symbol,sig.side,sig.is_limit,sig.entry,sig.sl,sig.tp,sig.action);
+      ExecSig(sig);
+      processed++;
+     }
+   if(processed>0)
+     {
+      // очистить inbox после обработки
+      int wf=FILE_WRITE|FILE_TXT|FILE_UNICODE;
+      if(InpUseCommonFolder) wf|=FILE_COMMON;
+      int wh=FileOpen(InpEmulateFile,wf);
+      if(wh!=INVALID_HANDLE){ FileWriteString(wh,""); FileClose(wh); }
+      PrintFormat("EMULATE done processed=%d",processed);
+     }
   }
 
 void PollTelegram()
@@ -1165,16 +1283,22 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(InpSlippagePoints);
    LoadDone(); LoadRulesFile();
-   Print("=== SignalKit Live EA v1.23 (formal labels + manage head-only) ===");
-   PrintFormat("Channel t.me/s/%s | DryRun=%s | lot=%.2f | rr=%.2f | manage=%s | MaxAge=%d s",
-               g_channel,(InpDryRun?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"),InpMaxSignalAgeSec);
+   Print("=== SignalKit Live EA v1.24 (price-token fix + emulate) ===");
+   PrintFormat("Channel t.me/s/%s | DryRun=%s | Emulate=%s | lot=%.2f | rr=%.2f | manage=%s | MaxAge=%d s",
+               g_channel,(EffectiveDryRun()?"YES":"no"),(EffectiveEmulate()?"YES":"no"),InpFixedLot,g_rr,(g_manage?"ON":"off"),InpMaxSignalAgeSec);
    if(InpIgnoreHistory)
       Print("InpIgnoreHistory=true — старые посты (старше MaxAge) пропускаем; свежие media/OG берём.");
    EventSetTimer(MathMax(5,InpPollSeconds));
-   PollTelegram();
+   if(EffectiveEmulate()) PollEmulateInbox();
+   else PollTelegram();
    return INIT_SUCCEEDED;
   }
 void OnDeinit(const int r){ EventKillTimer(); PrintFormat("opened=%d skipped=%d failed=%d",g_opened,g_skipped,g_failed); }
-void OnTimer(){ PollTelegram(); }
+void OnTimer()
+  {
+   // Сначала эмуляция (если inbox не пуст), иначе Telegram
+   if(EffectiveEmulate()) PollEmulateInbox();
+   else PollTelegram();
+  }
 void OnTick(){}
 //+------------------------------------------------------------------+
